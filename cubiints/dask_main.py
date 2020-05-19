@@ -30,33 +30,7 @@ from cubiints.tools import *
 
 xds = []
 
-
-def create_logger():
-	"""Create a console logger"""
-	log = logging.getLogger(__name__)
-	cfmt = logging.Formatter(('%(name)s - %(asctime)s %(levelname)s - %(message)s'))
-	log.setLevel(logging.DEBUG)
-	console = logging.StreamHandler()
-	console.setLevel(logging.INFO)
-	console.setFormatter(cfmt)
-	log.addHandler(console)
-
-	logfile = 'log-interval.txt'
-	if os.path.isfile(logfile):
-		import glob
-		nb_runs = len(glob.glob(logfile+"*"))
-
-		import shutil
-		shutil.move(logfile, logfile+"-"+str(nb_runs-1))
-
-	fh = logging.FileHandler(logfile)
-	fh.setLevel(logging.INFO)
-	fh.setFormatter(cfmt)
-	log.addHandler(fh)
-
-	return log
-
-LOGGER = create_logger()
+LOGGER = create_logger(__name__)
 
 
 def model_flux_per_scan_dask(bounds, scan_ids, fluxcols, w, f, filename="M1", outdir="./soln-intervals"):
@@ -86,21 +60,26 @@ def model_flux_per_scan_dask(bounds, scan_ids, fluxcols, w, f, filename="M1", ou
 
 	for i, scan_id in enumerate(scan_ids):
 		print("computing Flux for scan %d"%i)
+
+		if bounds[i+1] == -1:
+			sel = slice(bounds[i], None)
+		else:
+			sel = slice(bounds[i], bounds[i+1])
 		
 		if __sub_model:
-			model_abs = da.absolute(m1[bounds[i]:bounds[i+1]][...,[0,3]][m0[bounds[i]:bounds[i+1]][...,[0,3]]!=0] - m0[bounds[i]:bounds[i+1]][...,[0,3]][m0[bounds[i]:bounds[i+1]][...,[0,3]]!=0])
+			model_abs = da.absolute(m1[sel][...,[0,3]][m0[sel][...,[0,3]]!=0] - m0[sel][...,[0,3]][m0[sel][...,[0,3]]!=0])
 		else:
-			model_abs = da.absolute(m0[bounds[i]:bounds[i+1]][...,[0,3]][m0[bounds[i]:bounds[i+1]][...,[0,3]]!=0])
+			model_abs = da.absolute(m0[sel][...,[0,3]][m0[sel][...,[0,3]]!=0])
 		
 		flux[i] = np.mean(model_abs.compute())
 
 
-	np.save(outdir+"/"+filename+".npy", flux)
+	np.save(outdir+"/"+filename+"model.npy", flux)
 
 	return flux
 
 
-def compute_interval_dask(ms_opts={}, SNR=3, dvis=False, outdir="./soln-intervals", figname="interval", row_chunks=4000, freqslice=slice(None)):
+def compute_interval_dask(ms_opts={}, SNR=3, dvis=False, outdir="./soln-intervals", figname="interval", row_chunks=4000, freqslice=slice(None), jump=1, minbl=100):
 	"""replicate the compute interval using dask arrays"""
 
 	def __get_interval(rms, P, Na, SNR=3):
@@ -111,7 +90,7 @@ def compute_interval_dask(ms_opts={}, SNR=3, dvis=False, outdir="./soln-interval
 
 	t = table(ms_opts["msname"])
 
-	f = build_flag_colunm(t, obvis=None, freqslice=freqslice, row_chunks=row_chunks)
+	f = build_flag_colunm(t, minbl=minbl, obvis=None, freqslice=freqslice, row_chunks=row_chunks)
 	LOGGER.info("finished building flags")
 
 	w = fetch(ms_opts["WeightCol"], subset=t, return_dask=True, row_chunks=row_chunks)
@@ -133,11 +112,9 @@ def compute_interval_dask(ms_opts={}, SNR=3, dvis=False, outdir="./soln-interval
 	time_col = getattr(xds[0], "TIME").data.compute()
 	ant1 = getattr(xds[0], "ANTENNA1").data.compute()
 	ant2 = getattr(xds[0], "ANTENNA2").data.compute()
-	n_ants = get_mean_n_ant_scan(ant1, ant2, f.compute(), scans, time_col, jump=1)
+	n_ants = get_mean_n_ant_scan(ant1, ant2, f.compute(), scans, time_col, jump)
 
-	b = abs(np.roll(scans, 1) - scans) > 1
-	bounds = np.append(np.where(b==True)[0], -1)
-	scan_ids = np.array(range(len(bounds)-1), dtype=int)
+	scan_ids, bounds =  get_scan_bounds(scans, jump)
 
 	LOGGER.info("number scans is {}".format(len(scan_ids)))
 
@@ -172,11 +149,17 @@ def compute_interval_dask(ms_opts={}, SNR=3, dvis=False, outdir="./soln-interval
 
 	for i, scan_id in enumerate(scan_ids):
 		print("computing interval for scan %d"%i)
+
+		if bounds[i+1] == -1:
+			sel = slice(bounds[i], None)
+		else:
+			sel = slice(bounds[i], bounds[i+1])
+
 		if dvis:
 			raise NotImplementedError("Compute rms from visibilities only yet to be implemented")
 		else:
-			dps = d[bounds[i]:bounds[i+1]][...,[0,3]][d[bounds[i]:bounds[i+1]][...,[0,3]]!=0]
-			pps = p[bounds[i]:bounds[i+1]][...,[0,3]][d[bounds[i]:bounds[i+1]][...,[0,3]]!=0]
+			dps = d[sel][...,[0,3]][d[sel][...,[0,3]]!=0]
+			pps = p[sel][...,[0,3]][d[sel][...,[0,3]]!=0]
 			rps = dps - pps
 
 		rmss[i] = np.std(rps.compute())  # *np.sqrt(2)	
@@ -259,6 +242,7 @@ def create_parser():
 	p.add_argument("--fluxcol", default="MODEL_DATA", type=str, help="MS column containing the model visibilities for the specific direction (3GC). Can also take difference of columns as in CubiCal")
 	p.add_argument("--weightcol", default="WEIGHT", type=str, help="Weight Column")
 	p.add_argument("--snr", default=3, type=int, help="minimum SNR of the solutions")
+	p.add_argument("--min-bl", default=100, type=float, dest='minbl', help="exclude baselines less than set value")
 
 	p.add_argument("--rowchunks", default=4000, type=int, help="row chunks to be use by dask-ms")
 	p.add_argument("--ncpu", default=0, type=int, help="number of CPUs to set dask multiprocessing")
@@ -307,5 +291,5 @@ def main():
 	LOGGER.info("Using %i threads" % ncpu)
 
 
-	compute_interval_dask(ms_opts=ms_opts, SNR=args.snr, dvis=False, outdir=outdir, figname=args.name+"-interval", row_chunks=args.rowchunks)
+	compute_interval_dask(ms_opts=ms_opts, SNR=args.snr, dvis=False, outdir=outdir, figname=args.name+"-interval", row_chunks=args.rowchunks, minbl=args.minbl)
 

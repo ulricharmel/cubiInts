@@ -1,5 +1,60 @@
+import os
 import numpy as np
 import dask.array as da
+
+import logging
+
+LOGGER = logging.getLogger(__name__)
+
+log_init = False
+
+def create_logger(name):
+	"""Create a console logger"""
+	log = logging.getLogger(name)
+	cfmt = logging.Formatter(('%(module)s - %(asctime)s %(levelname)s - %(message)s'))
+	log.setLevel(logging.DEBUG)
+	console = logging.StreamHandler()
+	console.setLevel(logging.INFO)
+	console.setFormatter(cfmt)
+	log.addHandler(console)
+
+	logfile = 'log-interval.txt'
+
+	global log_init
+
+	if not log_init:
+		if os.path.isfile(logfile):
+			import glob
+			nb_runs = len(glob.glob(logfile+"*"))
+
+			import shutil
+			shutil.move(logfile, logfile+"-"+str(nb_runs-1))
+
+		log_init = True
+
+	fh = logging.FileHandler(logfile)
+	fh.setLevel(logging.INFO)
+	fh.setFormatter(cfmt)
+	log.addHandler(fh)
+
+	return log
+
+LOGGER = create_logger(__name__)
+
+def get_scan_bounds(scans, jump=0):
+	"""return the index bounds of the different scans"""
+
+	b = abs(np.roll(scans, 1) - scans) > jump
+	bounds = np.append(np.where(b==True)[0], -1)
+	
+	if len(bounds) == 1:
+		scan_ids = np.array(range(len(bounds)), dtype=int)
+		bounds = np.insert(bounds, 0, 0)
+	else:
+		scan_ids = np.array(range(len(bounds)-1), dtype=int)
+
+	
+	return scan_ids, bounds
 
 
 def get_mean_n_ant_scan(ant1, ant2, f, scans, time_col, jump=0):
@@ -7,20 +62,27 @@ def get_mean_n_ant_scan(ant1, ant2, f, scans, time_col, jump=0):
 
 	f is the flag table
 	"""
-	
-	b = abs(np.roll(scans, 1) - scans) > jump
-	bounds = np.append(np.where(b==True)[0], -1)
-	scan_ids = np.array(range(len(bounds)-1), dtype=int)
-	nch = f.shape[1]
 
+	# import pdb; pdb.set_trace()
+	
+	scan_ids, bounds =  get_scan_bounds(scans, jump)
+	
+	nch = f.shape[1]
 	n_ant = max(ant2) + 1
 	n_ants = np.zeros(len(scan_ids))
 	for i, scan_id in enumerate(scan_ids):
-		times = time_col[bounds[i]:bounds[i+1]]
+
+		if bounds[i+1] == -1:
+			sel = slice(bounds[i], None)
+		else:
+			sel = slice(bounds[i], bounds[i+1])
+		
+		times = time_col[sel]
 		Nt = float(len(np.unique(times)))*nch
-		fp=f[bounds[i]:bounds[i+1]][:,:, 0].squeeze()
-		ant1p = ant1[bounds[i]:bounds[i+1]] 
-		ant2p = ant2[bounds[i]:bounds[i+1]]
+		fp=f[sel][:,:, 0].squeeze()
+		ant1p = ant1[sel] 
+		ant2p = ant2[sel]
+		
 		ant1p = 1+np.repeat(ant1p[:,np.newaxis], nch, axis=1)
 		ant2p = 1+np.repeat(ant2p[:,np.newaxis], nch, axis=1)
 
@@ -45,10 +107,19 @@ def get_mean_n_ant_scan(ant1, ant2, f, scans, time_col, jump=0):
 			ant_counts[aa-1] = float(caa1 + caa2)
 
 		# print ant_counts, "scan id = %d"%(scan_id)
-		print(np.array(range(1, n_ant+1, 1))[np.where(ant_counts==0)], " scan id = %d"%scan_id)
+		# report if any is zero
+		ant_zeros = np.array(range(1, n_ant+1, 1))[np.where(ant_counts==0)]
+
+		if any(ant_zeros):
+			LOGGER.info("Completely flagged antennas:[{}]".format(", ".join('{}'.format(col) for col in columns)) + " for scan %d"%scan_id)
+
+		# print(np.array(range(1, n_ant+1, 1))[np.where(ant_counts==0)], " scan id = %d"%scan_id)
 
 		ant_counts = np.where(ant_counts==0, np.nan, ant_counts)
-		n_ants[i] = np.nanmin(ant_counts)/Nt  #should be using nanmean
+
+		# add one for the antenna itself
+
+		n_ants[i] = np.nanmin(ant_counts)/Nt + 1 #should be using nanmean
 
 	return n_ants
 
@@ -104,8 +175,17 @@ def build_flag_colunm(tt, minbl=100, bitf=1, obvis=None, freqslice=slice(None), 
 	# import pdb; pdb.set_trace()
 
 	uvw0 =  fetch("UVW", subset=tt)
-	bflagrow = fetch("BITFLAG_ROW", subset=tt)
-	bflagcol = fetch("BITFLAG", subset=tt, freqslice=freqslice)
+
+	# TODO: Explain this and handle it better in the user options 
+
+	try:
+		bflagrow = fetch("BITFLAG_ROW", subset=tt)
+		bflagcol = fetch("BITFLAG", subset=tt, freqslice=freqslice)
+	except:
+		LOGGER.info("No BITFLAG column in MS will default to FLAG/FLAG_ROW columns")
+		bflagrow = fetch("FLAG_ROW", subset=tt)
+		bflagcol = fetch("FLAG", subset=tt, freqslice=freqslice)
+
 	
 	flag0 = np.zeros_like(bflagcol)
 

@@ -1,4 +1,7 @@
 dask-ms
 numpy
+numba
 numpydoc
+scipy
+SharedArray
 matplotlib

@@ -2,6 +2,8 @@ import os
 import numpy as np
 import dask.array as da
 import warnings
+import line_profiler
+profile = line_profiler.LineProfiler()
 
 import logging
 
@@ -361,8 +363,10 @@ def build_flag_colunm(tt, minbl=100, obvis=None, freqslice=slice(None), row_chun
 	flag0 = np.zeros_like(bflagcol)
 
 	#flag the with baseline length
-	uv2 = (uvw0[:, 0:2] ** 2).sum(1)
-	flag0[uv2 < minbl**2] = 1
+	if minbl:
+		uv2 = (uvw0[:, 0:2] ** 2).sum(1)
+		flag0[uv2 < minbl**2] = 1
+		del uvw0, uv2
 
 	# Exceptionally add CubiCal flags
 	if cubi_flags:
@@ -387,7 +391,7 @@ def build_flag_colunm(tt, minbl=100, obvis=None, freqslice=slice(None), row_chun
 	
 	LOGGER.info("Flags fraction {}".format(percent_flag))
 
-	del bflagrow, bflagcol, uvw0, uv2
+	del bflagrow, bflagcol
 
 	_, nfreq, ncorr = flag0.shape
 

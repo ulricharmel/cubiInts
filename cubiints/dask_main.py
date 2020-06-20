@@ -35,6 +35,7 @@ from daskms import xds_from_ms, xds_from_table
 import dask
 import dask.array as da
 from cubiints.tools import *
+from cubiints.aic_functions import optimal_time_freq_interval_from_gains
 
 
 xds = []
@@ -136,6 +137,7 @@ def compute_interval_dask_index(ms_opts={}, SNR=3, dvis=False, outdir="./soln-in
 	w = fetch(ms_opts["WeightCol"], subset=t, return_dask=True)
 	LOGGER.info("read weight-column susscessful")
 
+	t.close()
 	LOGGER.info("Table Closed")
 
 	cols = ms_opts["FluxCol"].split("-")
@@ -293,8 +295,8 @@ def create_parser():
 	p.add_argument("--weightcol", default="WEIGHT", type=str, help="Weight Column")
 	p.add_argument("--snr", default=3, type=int, help="minimum SNR of the solutions")
 	p.add_argument("--min-bl", default=100, type=float, dest='minbl', help="exclude baselines less than set value")
-	p.add_argument("--freq-chunk", default=128, type=float, dest='fchunk', help="size of frequency chunk to be use by CubiCal")
-	p.add_argument("--time-chunk", default=64, type=float, dest='tchunk', help="size of time chunk to be use by CubiCal")
+	p.add_argument("--freq-chunk", default=128, type=int, dest='fchunk', help="size of frequency chunk to be use by CubiCal")
+	p.add_argument("--time-chunk", default=64, type=int, dest='tchunk', help="size of time chunk to be use by CubiCal")
 	p.add_argument('--cubical-flags', dest='cubi_flags', action='store_true', help="apply cubical flags otherwise only legacy flags are applied")
 
 	p.add_argument("--rowchunks", default=4000, type=int, help="row chunks to be use by dask-ms")
@@ -305,6 +307,7 @@ def create_parser():
 	
 	p.add_argument("--same", dest='same', action='store_true', help="use the same solution interval for time and frequency, default is use longer frequency interval")
 	p.add_argument("--gaintable", type=str, help="gain table for second round search with Akaike Information Criterion (AIC)")
+	p.add_argument("--gain-name", type=str, help="gain label to index CubiCal parameters database", default="G:gain", dest="Gname")
 	p.add_argument('--usegains', dest='usegains', action='store_true', help="search using gains AIC")
 	p.add_argument('--no-usegains', dest='usegains', action='store_false', help="do not search using gains AIC")
 	p.add_argument('--time-int', dest="tint", type=int, help="time interval use for the passed gains")
@@ -333,26 +336,44 @@ def main():
 	if args.verbose:
 		for handler in LOGGER.handlers:
 			handler.setLevel(logging.DEBUG)
-
-	outdir = create_output_dirs(args.outdir)
-
-
-	ms_opts = {"DataCol": args.datacol, "ModelCol": args.modelcol, "FluxCol": args.fluxcol, "WeightCol":args.weightcol, "msname": args.ms}
-
-	if args.ncpu:
-		ncpu = args.ncpu
-		from multiprocessing.pool import ThreadPool
-		dask.config.set(pool=ThreadPool(ncpu))
 	else:
-		import multiprocessing
-		ncpu = multiprocessing.cpu_count()
+		for handler in LOGGER.handlers:
+			handler.setLevel(logging.INFO)
 
-	LOGGER.info("Using %i threads" % ncpu)
 
-	try:
-		compute_interval_dask_index(ms_opts=ms_opts, SNR=args.snr, dvis=False, outdir=outdir, figname=args.name+"-interval", row_chunks=args.rowchunks, minbl=args.minbl, 
-									tchunk=args.tchunk, fchunk=args.fchunk, save_out=args.save_out, cubi_flags=args.cubi_flags)
-	except:
-		extype, value, tb = sys.exc_info()
-		traceback.print_exc()
-		pdb.post_mortem(tb)
+	if args.usegains is False:
+
+		outdir = create_output_dirs(args.outdir)
+
+
+		ms_opts = {"DataCol": args.datacol, "ModelCol": args.modelcol, "FluxCol": args.fluxcol, "WeightCol":args.weightcol, "msname": args.ms}
+
+		if args.ncpu:
+			ncpu = args.ncpu
+			from multiprocessing.pool import ThreadPool
+			dask.config.set(pool=ThreadPool(ncpu))
+		else:
+			import multiprocessing
+			ncpu = multiprocessing.cpu_count()
+
+		LOGGER.info("Using %i threads" % ncpu)
+
+		try:
+			compute_interval_dask_index(ms_opts=ms_opts, SNR=args.snr, dvis=False, outdir=outdir, figname=args.name+"-interval", row_chunks=args.rowchunks, minbl=args.minbl, 
+										tchunk=args.tchunk, fchunk=args.fchunk, save_out=args.save_out, cubi_flags=args.cubi_flags)
+		except:
+			extype, value, tb = sys.exc_info()
+			traceback.print_exc()
+			pdb.post_mortem(tb)
+
+	else:
+
+		if args.tint is None or args.fint is None:
+			print("options time-int and freq-int must be passed when usegains is selected")
+			parser.exit()
+		if args.gaintable is None:
+			print("A gaintable must be specified")
+			parser.exit()
+		tint = optimal_time_freq_interval_from_gains(args.gaintable, args.ms, args.Gname, args.tint, args.fint, args.tchunk, verbosity=args.verbose, prefix=args.name)
+		print("optimal interval time-int= {}".format(tint))
+		

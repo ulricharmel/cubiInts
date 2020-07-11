@@ -8,6 +8,15 @@ import matplotlib.pyplot as plt
 import sys
 import os
 
+import traceback
+
+try:
+	import ipdb as pdb
+except:
+	import pdb
+
+import warnings
+
 from matplotlib import rcParams 
 #import aplpy
 rcParams.update({'font.size': 20, 'font.family': 'sans-serif'})
@@ -26,14 +35,15 @@ from daskms import xds_from_ms, xds_from_table
 import dask
 import dask.array as da
 from cubiints.tools import *
+from cubiints.aic_functions import optimal_time_freq_interval_from_gains
 
 
 xds = []
 
 LOGGER = create_logger(__name__)
 
-
-def model_flux_per_scan_dask(bounds, scan_ids, fluxcols, w, f, filename="M1", outdir="./soln-intervals"):
+@profile
+def model_flux_per_scan_dask(time_chunks, freq_chunks, fluxcols, w, f, filename="M1", outdir="./soln-intervals", indices=None):
 	"""compute the flux per interval scans"""
 
 	if len(fluxcols) == 1:
@@ -53,49 +63,81 @@ def model_flux_per_scan_dask(bounds, scan_ids, fluxcols, w, f, filename="M1", ou
 	if __sub_model:
 		# p*=(f==False) select based on m only
 		m1*=w
-
-	LOGGER.info("Done applying weights and flags")
-
-	flux = np.zeros(len(scan_ids))
-
-	for i, scan_id in enumerate(scan_ids):
-		print("computing Flux for scan %d"%i)
-
-		if bounds[i+1] == -1:
-			sel = slice(bounds[i], None)
-		else:
-			sel = slice(bounds[i], bounds[i+1])
 		
-		if __sub_model:
-			model_abs = da.absolute(m1[sel][...,[0,3]][m0[sel][...,[0,3]]!=0] - m0[sel][...,[0,3]][m0[sel][...,[0,3]]!=0])
-		else:
-			model_abs = da.absolute(m0[sel][...,[0,3]][m0[sel][...,[0,3]]!=0])
-		
-		flux[i] = np.mean(model_abs.compute())
+	LOGGER.debug("Done applying weights and flags")
 
+	if indices is None:
 
-	np.save(outdir+"/"+filename+"model.npy", flux)
+		nt, nv = len(time_chunks), len(freq_chunks)
 
-	return flux
+		flux = np.zeros((nt, nv))
 
+		for tt, time_chunk in enumerate(time_chunks):
+			for ff, freq_chunk in enumerate(freq_chunks):
+				tsel = slice(time_chunk[0], time_chunk[1])
+				fsel = slice(freq_chunk[0], freq_chunk[1])
 
-def compute_interval_dask(ms_opts={}, SNR=3, dvis=False, outdir="./soln-intervals", figname="interval", row_chunks=4000, freqslice=slice(None), jump=1, minbl=100):
+				if __sub_model:
+					model_abs = da.absolute(m1[tsel, fsel, :][...,[0,3]][m0[tsel, fsel, :][...,[0,3]]!=0] - m0[tsel, fsel,:][...,[0,3]][m0[tsel, fsel, :][...,[0,3]]!=0])
+				else:
+					model_abs = da.absolute(m0[tsel, fsel, :][...,[0,3]][m0[tsel, fsel, :][...,[0,3]]!=0])
+				
+				with warnings.catch_warnings():
+					warnings.simplefilter("ignore", category=RuntimeWarning)
+					flux[tt,ff] = np.mean(model_abs.compute())
+
+			if tt%6 == 0:
+				LOGGER.info("Done computing model flux for {%d}/{%d} time chunks"%(tt+1, len(time_chunks)))
+
+		LOGGER.info("Done computing model flux")
+
+		np.save(outdir+"/"+filename+"flux.npy", flux)
+
+		return flux
+
+	else:
+
+		flux = np.zeros(len(indices))
+
+		for loc, index in enumerate(indices):
+			tsel = slice(time_chunks[index[0]][0], time_chunks[index[0]][1])
+			fsel = slice(freq_chunks[index[1]][0], freq_chunks[index[1]][1])
+
+			if __sub_model:
+				model_abs = da.absolute(m1[tsel, fsel, :][...,[0,3]][m0[tsel, fsel, :][...,[0,3]]!=0] - m0[tsel, fsel,:][...,[0,3]][m0[tsel, fsel, :][...,[0,3]]!=0])
+			else:
+				model_abs = da.absolute(m0[tsel, fsel, :][...,[0,3]][m0[tsel, fsel, :][...,[0,3]]!=0])
+				
+			with warnings.catch_warnings():
+				warnings.simplefilter("ignore", category=RuntimeWarning)
+				flux[loc] = np.mean(model_abs.compute())
+
+		LOGGER.info("Done computing model flux")
+
+		return flux
+
+@profile
+def compute_interval_dask_index(ms_opts={}, SNR=3, dvis=False, outdir="./soln-intervals", figname="interval", minbl=0, row_chunks=4000, freqslice=slice(None), jump=1, 
+										tchunk=64, fchunk=128, save_out=True, cubi_flags=False):
 	"""replicate the compute interval using dask arrays"""
-
-	def __get_interval(rms, P, Na, SNR=3):
-		Nvis = int(np.ceil(SNR**2.*rms**2./((int(Na)-1.)*P**2.)))
-		return Nvis
 
 	t0 = time.time()
 
 	t = table(ms_opts["msname"])
 
-	f = build_flag_colunm(t, minbl=minbl, obvis=None, freqslice=freqslice, row_chunks=row_chunks)
+	f = build_flag_colunm(t, minbl=minbl, obvis=None, freqslice=freqslice, cubi_flags=cubi_flags)
+	
 	LOGGER.info("finished building flags")
 
-	w = fetch(ms_opts["WeightCol"], subset=t, return_dask=True, row_chunks=row_chunks)
+	LOGGER.debug("Took {} seconds to complete".format(time.time()-t0))
+
+	cell = t.getcell("DATA", rownr=1)
+	nfreq = cell.shape[0]
+
+	w = fetch(ms_opts["WeightCol"], subset=t, return_dask=True)
 	LOGGER.info("read weight-column susscessful")
 
+	t.close()
 	LOGGER.info("Table Closed")
 
 	cols = ms_opts["FluxCol"].split("-")
@@ -112,11 +154,26 @@ def compute_interval_dask(ms_opts={}, SNR=3, dvis=False, outdir="./soln-interval
 	time_col = getattr(xds[0], "TIME").data.compute()
 	ant1 = getattr(xds[0], "ANTENNA1").data.compute()
 	ant2 = getattr(xds[0], "ANTENNA2").data.compute()
-	n_ants = get_mean_n_ant_scan(ant1, ant2, f.compute(), scans, time_col, jump)
 
-	scan_ids, bounds =  get_scan_bounds(scans, jump)
+	NUMBER_ANTENNAS = max(ant2) + 1
 
-	LOGGER.info("number scans is {}".format(len(scan_ids)))
+	time_chunks = define_time_chunks(time_col, tchunk, scans, jump=jump)
+
+	freq_chunks = define_freq_chunks(fchunk, nfreq)
+
+	time_f = time.time()
+
+	flags_ratio = get_flag_ratio(time_chunks, freq_chunks, f.compute())
+
+	indices = [np.unravel_index(np.nanargmin(np.abs(flags_ratio-np.nanmedian(flags_ratio))), flags_ratio.shape)]
+
+	n_ants = get_mean_n_ant_tf(ant1, ant2, f.compute(), time_chunks, freq_chunks, time_col, indices=indices) #[2,...]  # return only the min values in each chunk so out put is 2D 
+
+	# print(np.where(n_ants<20), "see where n ants is less than 20 the most")
+
+	n_ants[n_ants==0] = np.nan
+
+	LOGGER.debug("Took {} seconds to compute flag ratio and antennas".format(time.time()-time_f))
 
 	if dvis:
 		raise NotImplementedError("Compute rms from visibilities only yet to be implemented")
@@ -135,86 +192,81 @@ def compute_interval_dask(ms_opts={}, SNR=3, dvis=False, outdir="./soln-interval
 
 	LOGGER.info("Done applying weights and flags")
 
-	_prefix = figname.split("interval")[0]
+	_prefix = figname.split("interval")[0]+"T"+str(indices[0][0])+"F"+str(indices[0][1])+"-"
 
-	flux = model_flux_per_scan_dask(bounds, scan_ids, cols, w, f, filename=_prefix, outdir=outdir)
-	rmss = np.zeros(len(scan_ids))
+	time_m = time.time()
+	flux = model_flux_per_scan_dask(time_chunks, freq_chunks, cols, w, f, filename=_prefix, outdir=outdir, indices=indices)
+	LOGGER.debug("Took {} seconds to compute model".format(time.time()-time_m))
 
-	Na_ms = max(ant2) + 1
+	chan_rms = np.zeros((n_ants.shape[1], NUMBER_ANTENNAS))
+	
+	nv_nt = np.zeros_like(n_ants)
 
-	nv_nt = np.zeros(len(scan_ids))
-	nv_nt2 = np.zeros(len(scan_ids))
+	time_c = time.time()
 
-	# import pdb; pdb.set_trace()
+	for loc, index in enumerate(indices): 
 
-	for i, scan_id in enumerate(scan_ids):
-		print("computing interval for scan %d"%i)
+		tsel = slice(time_chunks[index[0]][0], time_chunks[index[0]][1])
+		fsel = slice(freq_chunks[index[1]][0], freq_chunks[index[1]][1])
 
-		if bounds[i+1] == -1:
-			sel = slice(bounds[i], None)
-		else:
-			sel = slice(bounds[i], bounds[i+1])
+		ant1p = ant1[tsel] 
+		ant2p = ant2[tsel]
 
-		if dvis:
-			raise NotImplementedError("Compute rms from visibilities only yet to be implemented")
-		else:
-			dps = d[sel][...,[0,3]][d[sel][...,[0,3]]!=0]
-			pps = p[sel][...,[0,3]][d[sel][...,[0,3]]!=0]
+		# pdb.set_trace()
+
+		for aa in range(NUMBER_ANTENNAS):			
+			dps = d[tsel][(ant1p==aa)|(ant2p==aa)][:, fsel, :][...,[0,3]] #[d[(ant1p==aa)|(ant1p==aa)][:, fsel, :][...,[0,3]]!=0]
+			pps = p[tsel][(ant1p==aa)|(ant2p==aa)][:, fsel, :][...,[0,3]] #[d[(ant1p==aa)|(ant1p==aa)][:, fsel, :][...,[0,3]]!=0]
 			rps = dps - pps
 
-		rmss[i] = np.std(rps.compute())  # *np.sqrt(2)	
-		
-		nv_nt[i] = __get_interval(rmss[i], flux[i], n_ants[i], SNR=SNR)
-		nv_nt2[i] = __get_interval(rmss[i], flux[i], Na_ms, SNR=SNR)
+			with warnings.catch_warnings():
+				warnings.simplefilter("ignore", category=RuntimeWarning)
+				tmp = rps.compute()
+				tmp[tmp==0] = np.nan
+				# rmss[loc, aa] = np.nanstd(tmp)*np.sqrt(2)	#np.sqrt(np.sum(tmp)/tmp.size) #
+				chan_rms[:, aa] =  np.nanstd(tmp, axis=(0,2))*np.sqrt(2)
+
+			# nv_nt[loc, aa] = __get_interval(rmss[loc, aa], flux[loc], n_ants[index[0], index[1], aa], SNR=SNR
+			if aa%6 == 0:
+				LOGGER.debug("Done computing noise for {%d}/{%d} antennas"%(aa+1, NUMBER_ANTENNAS))
+
+		nv_nt[loc] = get_interval(chan_rms, flux[loc], n_ants[loc], SNR=SNR)
 
 
-	LOGGER.info("Number of antennas per scan: [{}]".format(", ".join('{:.2f}'.format(x) for x in n_ants)))
-	LOGGER.info("Esitmated rms per scan: [{}]".format(", ".join('{:.2f}'.format(x) for x in rmss)))
-	LOGGER.info("Esitmated flux per scan: [{}]".format(", ".join('{:.2f}'.format(x) for x in flux)))
-	LOGGER.info("Soln-interval per scan: [{}]".format(", ".join('{:.0f}'.format(x) for x in nv_nt)))
+	LOGGER.debug("Took {} seconds to compute intervals".format(time.time()-time_c))
 
 	# save products
-	
-	np.save(outdir+"/"+_prefix+"rms.npy", rmss)
-	np.save(outdir+"/"+_prefix+"num_antennas.npy", n_ants)
 
+	nv_nt[nv_nt==0] = np.nan
 
-	if freqslice == slice(None):
-		slicestr = "all"
+	nvis = np.nanmax(nv_nt)
+	chunks_size_ok = True
+
+	if nvis < fchunk:
+		f_int = nvis
+		t_int = 1
 	else:
-		slicestr = "%d-%d"%(freqslice.start, freqslice.stop)
+		f_int = fchunk
+		t_int = np.ceil(nvis/fchunk)
+		if t_int > tchunk:
+			chunks_size_ok = False 
 
-	fig, ax1 = plt.subplots()
-	ax1.plot(scan_ids, nv_nt, c='b', linewidth="3", marker="D", label="mean Na")
-	ax1.plot(scan_ids, nv_nt2, c='r', linewidth="3", marker="D", label="fixed Na")
-
-	# zip joins x and y coordinates in pairs
-	for x,y in zip(scan_ids, nv_nt):
-		label = "{:.0f}".format(y)
-		ax1.annotate(label, # this is the text
-                 (x,y), # this is the point to label
-                 textcoords="offset points", # how to position the text
-                 xytext=(0,10), # distance from text to points (x,y)
-                 ha='center') # horizontal alignment can be left, right or center
-
-	for x,y in zip(scan_ids, nv_nt2):
-		label = "{:.0f}".format(y)
-		ax1.annotate(label, # this is the text
-                 (x,y), # this is the point to label
-                 textcoords="offset points", # how to position the text
-                 xytext=(0,10), # distance from text to points (x,y)
-                 ha='center') # horizontal alignment can be left, right or center
-
-	ax1.set_ylabel("Soln-interval", size=30)
-	ax1.set_xlabel("Scan index", size=30)
-	ax1.set_title(figname, fontdict={'fontsize': 8, 'fontweight': 'medium'})
-	#plt.legend(loc='best', fontsize='x-small')
-	fig.tight_layout()
-	fig.savefig(outdir+"/"+figname+"_jump_scan_%s.pdf"%slicestr, dpi=200)
-	plt.clf()
-	plt.close()
+	LOGGER.info("Number visibilities per solution block is {}.".format(nvis))
+	if chunks_size_ok:
+		LOGGER.info("Suggested solution intervals based on chunks sizes frequency interval = {} and time interval = {}.".format(f_int, t_int))
+	else:
+		LOGGER.info("Suggested solution intervals frequency interval = {} and time interval = {} large than chunk sizes. Consider increasing the chunk sizes and reruning a better suggestion.".format(f_int, t_int))
+	
+	if save_out:
+		LOGGER.info("Computed statstics will be saved in the output folder.")
+		
+		np.save(outdir+"/"+_prefix+"num_antennas.npy", n_ants)
+		np.save(outdir+"/"+_prefix+"chan_rms.npy", chan_rms)
+		np.save(outdir+"/"+_prefix+"nv_nt.npy", nv_nt)
+		np.save(outdir+"/"+_prefix+"flags.npy", flags_ratio)
 
 	LOGGER.info("Took {} seconds to complete".format(time.time()-t0))
+
 
 
 def create_output_dirs(outdir):
@@ -243,6 +295,9 @@ def create_parser():
 	p.add_argument("--weightcol", default="WEIGHT", type=str, help="Weight Column")
 	p.add_argument("--snr", default=3, type=int, help="minimum SNR of the solutions")
 	p.add_argument("--min-bl", default=100, type=float, dest='minbl', help="exclude baselines less than set value")
+	p.add_argument("--freq-chunk", default=128, type=int, dest='fchunk', help="size of frequency chunk to be use by CubiCal")
+	p.add_argument("--time-chunk", default=64, type=int, dest='tchunk', help="size of time chunk to be use by CubiCal")
+	p.add_argument('--cubical-flags', dest='cubi_flags', action='store_true', help="apply cubical flags otherwise only legacy flags are applied")
 
 	p.add_argument("--rowchunks", default=4000, type=int, help="row chunks to be use by dask-ms")
 	p.add_argument("--ncpu", default=0, type=int, help="number of CPUs to set dask multiprocessing")
@@ -252,6 +307,7 @@ def create_parser():
 	
 	p.add_argument("--same", dest='same', action='store_true', help="use the same solution interval for time and frequency, default is use longer frequency interval")
 	p.add_argument("--gaintable", type=str, help="gain table for second round search with Akaike Information Criterion (AIC)")
+	p.add_argument("--gain-name", type=str, help="gain label to index CubiCal parameters database", default="G:gain", dest="Gname")
 	p.add_argument('--usegains', dest='usegains', action='store_true', help="search using gains AIC")
 	p.add_argument('--no-usegains', dest='usegains', action='store_false', help="do not search using gains AIC")
 	p.add_argument('--time-int', dest="tint", type=int, help="time interval use for the passed gains")
@@ -259,8 +315,10 @@ def create_parser():
 
 	p.add_argument("--outdir", type=str, default="out", help="output directory, default is created in current working directory")
 	p.add_argument("--name", type=str, default="G", help="prefix to use in namimg output files")
+	p.add_argument('--save-out', dest='save_out', action='store_true', help="save all computed statstics in npy files")
 
 	p.set_defaults(usegains=False)
+	p.set_defaults(save_out=False)
 
 	p.add_argument("-v", "--verbose", help="increase output verbosity",
 	                action="store_false")
@@ -275,21 +333,47 @@ def main():
 	parser = create_parser()
 	args = parser.parse_args()
 
-	outdir = create_output_dirs(args.outdir)
-
-
-	ms_opts = {"DataCol": args.datacol, "ModelCol": args.modelcol, "FluxCol": args.fluxcol, "WeightCol":args.weightcol, "msname": args.ms}
-
-	if args.ncpu:
-		ncpu = args.ncpu
-		from multiprocessing.pool import ThreadPool
-		dask.config.set(pool=ThreadPool(ncpu))
+	if args.verbose:
+		for handler in LOGGER.handlers:
+			handler.setLevel(logging.DEBUG)
 	else:
-		import multiprocessing
-		ncpu = multiprocessing.cpu_count()
-
-	LOGGER.info("Using %i threads" % ncpu)
+		for handler in LOGGER.handlers:
+			handler.setLevel(logging.INFO)
 
 
-	compute_interval_dask(ms_opts=ms_opts, SNR=args.snr, dvis=False, outdir=outdir, figname=args.name+"-interval", row_chunks=args.rowchunks, minbl=args.minbl)
+	if args.usegains is False:
 
+		outdir = create_output_dirs(args.outdir)
+
+
+		ms_opts = {"DataCol": args.datacol, "ModelCol": args.modelcol, "FluxCol": args.fluxcol, "WeightCol":args.weightcol, "msname": args.ms}
+
+		if args.ncpu:
+			ncpu = args.ncpu
+			from multiprocessing.pool import ThreadPool
+			dask.config.set(pool=ThreadPool(ncpu))
+		else:
+			import multiprocessing
+			ncpu = multiprocessing.cpu_count()
+
+		LOGGER.info("Using %i threads" % ncpu)
+
+		try:
+			compute_interval_dask_index(ms_opts=ms_opts, SNR=args.snr, dvis=False, outdir=outdir, figname=args.name+"-interval", row_chunks=args.rowchunks, minbl=args.minbl, 
+										tchunk=args.tchunk, fchunk=args.fchunk, save_out=args.save_out, cubi_flags=args.cubi_flags)
+		except:
+			extype, value, tb = sys.exc_info()
+			traceback.print_exc()
+			pdb.post_mortem(tb)
+
+	else:
+
+		if args.tint is None or args.fint is None:
+			print("options time-int and freq-int must be passed when usegains is selected")
+			parser.exit()
+		if args.gaintable is None:
+			print("A gaintable must be specified")
+			parser.exit()
+		tint = optimal_time_freq_interval_from_gains(args.gaintable, args.ms, args.Gname, args.tint, args.fint, args.tchunk, verbosity=args.verbose, prefix=args.name)
+		print("optimal interval time-int= {}".format(tint))
+		

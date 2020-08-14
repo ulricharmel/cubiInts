@@ -37,10 +37,10 @@ import dask.array as da
 from cubiints.tools import *
 from cubiints.aic_functions import optimal_time_freq_interval_from_gains
 
-
 xds = []
 
-LOGGER = create_logger(__name__)
+# LOGGER = create_logger(__name__)
+from cubiints import LOGGER
 
 @profile
 def model_flux_per_scan_dask(time_chunks, freq_chunks, fluxcols, w, f, filename="M1", outdir="./soln-intervals", indices=None):
@@ -118,7 +118,7 @@ def model_flux_per_scan_dask(time_chunks, freq_chunks, fluxcols, w, f, filename=
 
 @profile
 def compute_interval_dask_index(ms_opts={}, SNR=3, dvis=False, outdir="./soln-intervals", figname="interval", minbl=0, row_chunks=4000, freqslice=slice(None), jump=1, 
-										tchunk=64, fchunk=128, save_out=True, cubi_flags=False):
+										tchunk=64, fchunk=128, save_out=True, cubi_flags=False, datachunk=None):
 	"""replicate the compute interval using dask arrays"""
 
 	t0 = time.time()
@@ -163,9 +163,13 @@ def compute_interval_dask_index(ms_opts={}, SNR=3, dvis=False, outdir="./soln-in
 
 	time_f = time.time()
 
-	flags_ratio = get_flag_ratio(time_chunks, freq_chunks, f.compute())
+	if datachunk:
+		indices = [tuple(np.array(datachunk.split("T")[1].split("F"), dtype=int))]
 
-	indices = [np.unravel_index(np.nanargmin(np.abs(flags_ratio-np.nanmedian(flags_ratio))), flags_ratio.shape)]
+	else:
+		flags_ratio = get_flag_ratio(time_chunks, freq_chunks, f.compute())
+
+		indices = [np.unravel_index(np.nanargmin(np.abs(flags_ratio-np.nanmedian(flags_ratio))), flags_ratio.shape)]
 
 	n_ants = get_mean_n_ant_tf(ant1, ant2, f.compute(), time_chunks, freq_chunks, time_col, indices=indices) #[2,...]  # return only the min values in each chunk so out put is 2D 
 
@@ -202,6 +206,8 @@ def compute_interval_dask_index(ms_opts={}, SNR=3, dvis=False, outdir="./soln-in
 	
 	nv_nt = np.zeros_like(n_ants)
 
+	grms_na = np.zeros_like(n_ants)
+
 	time_c = time.time()
 
 	for loc, index in enumerate(indices): 
@@ -230,7 +236,7 @@ def compute_interval_dask_index(ms_opts={}, SNR=3, dvis=False, outdir="./soln-in
 			if aa%6 == 0:
 				LOGGER.debug("Done computing noise for {%d}/{%d} antennas"%(aa+1, NUMBER_ANTENNAS))
 
-		nv_nt[loc] = get_interval(chan_rms, flux[loc], n_ants[loc], SNR=SNR)
+		nv_nt[loc], grms_na[loc] = get_interval(chan_rms, flux[loc], n_ants[loc], SNR=SNR)
 
 
 	LOGGER.debug("Took {} seconds to compute intervals".format(time.time()-time_c))
@@ -263,7 +269,20 @@ def compute_interval_dask_index(ms_opts={}, SNR=3, dvis=False, outdir="./soln-in
 		np.save(outdir+"/"+_prefix+"num_antennas.npy", n_ants)
 		np.save(outdir+"/"+_prefix+"chan_rms.npy", chan_rms)
 		np.save(outdir+"/"+_prefix+"nv_nt.npy", nv_nt)
-		np.save(outdir+"/"+_prefix+"flags.npy", flags_ratio)
+		np.save(outdir+"/"+_prefix+"grms.npy", grms_na)
+
+		if datachunk is None:
+			np.save(outdir+"/"+_prefix+"flags.npy", flags_ratio)
+
+		imshow_stat(n_ants, outdir+"/"+_prefix+"nants.pdf")
+		imshow_stat(chan_rms, outdir+"/"+_prefix+"chan_rms.pdf")
+		imshow_stat(nv_nt, outdir+"/"+_prefix+"nv_nt.pdf")
+
+		with np.errstate(divide='ignore', invalid='ignore'):
+			imshow_stat(grms_na/128., outdir+"/"+_prefix+"grms-128.pdf")
+			imshow_stat(grms_na/nv_nt, outdir+"/"+_prefix+"grms-var.pdf")
+
+
 
 	LOGGER.info("Took {} seconds to complete".format(time.time()-t0))
 
@@ -297,6 +316,7 @@ def create_parser():
 	p.add_argument("--min-bl", default=100, type=float, dest='minbl', help="exclude baselines less than set value")
 	p.add_argument("--freq-chunk", default=128, type=int, dest='fchunk', help="size of frequency chunk to be use by CubiCal")
 	p.add_argument("--time-chunk", default=64, type=int, dest='tchunk', help="size of time chunk to be use by CubiCal")
+	p.add_argument("--single-chunk", default=None, type=str, dest='datachunk', help="use a specific datachunk like in CubiCal, example DOT0F1")
 	p.add_argument('--cubical-flags', dest='cubi_flags', action='store_true', help="apply cubical flags otherwise only legacy flags are applied")
 
 	p.add_argument("--rowchunks", default=4000, type=int, help="row chunks to be use by dask-ms")
@@ -317,11 +337,8 @@ def create_parser():
 	p.add_argument("--name", type=str, default="G", help="prefix to use in namimg output files")
 	p.add_argument('--save-out', dest='save_out', action='store_true', help="save all computed statstics in npy files")
 
-	p.set_defaults(usegains=False)
-	p.set_defaults(save_out=False)
-
 	p.add_argument("-v", "--verbose", help="increase output verbosity",
-	                action="store_false")
+	                action="store_true")
 	return p
 
 
@@ -339,6 +356,8 @@ def main():
 	else:
 		for handler in LOGGER.handlers:
 			handler.setLevel(logging.INFO)
+
+	LOGGER.info("started cubiints " + " ".join(sys.argv[1:]))
 
 
 	if args.usegains is False:
@@ -360,7 +379,7 @@ def main():
 
 		try:
 			compute_interval_dask_index(ms_opts=ms_opts, SNR=args.snr, dvis=False, outdir=outdir, figname=args.name+"-interval", row_chunks=args.rowchunks, minbl=args.minbl, 
-										tchunk=args.tchunk, fchunk=args.fchunk, save_out=args.save_out, cubi_flags=args.cubi_flags)
+										tchunk=args.tchunk, fchunk=args.fchunk, save_out=args.save_out, cubi_flags=args.cubi_flags, datachunk=args.datachunk)
 		except:
 			extype, value, tb = sys.exc_info()
 			traceback.print_exc()

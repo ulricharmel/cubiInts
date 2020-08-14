@@ -3,7 +3,7 @@ import numba
 from pyrap.tables import table
 
 import sys
-sys.path.insert(0, '/net/jake/home/ulrich/roibosenv/CubiCal')
+# sys.path.insert(0, '/net/jake/home/ulrich/roibosenv/CubiCal')
 # reload(sys)
 # sys.setdefaultencoding('utf-8')
 
@@ -17,8 +17,10 @@ plt.rcParams["figure.figsize"] = [16,9]
 plt.rc('text', usetex=False)
 plt.rc('font', family='serif')
 
-from cubiints.tools import create_logger
-LOGGER = create_logger("AIC")
+# from cubiints.tools import create_logger
+# LOGGER = create_logger("AIC")
+
+from cubiints import LOGGER
 
 
 def extract_from_db(dbfile, name="G:gain"):

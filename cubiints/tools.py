@@ -5,55 +5,22 @@ import warnings
 import line_profiler
 profile = line_profiler.LineProfiler()
 
-import logging
+import matplotlib
+matplotlib.use('agg')
+import matplotlib.pyplot as plt
 
-LOGGER = logging.getLogger(__name__)
-
-log_init = False
-
-def create_logger(name):
-	"""Create a console logger"""
-	log = logging.getLogger(name)
-	cfmt = logging.Formatter(('%(module)s - %(asctime)s %(levelname)s - %(message)s'))
-	log.setLevel(logging.DEBUG)
-	console = logging.StreamHandler()
-	console.setLevel(logging.INFO)
-	console.setFormatter(cfmt)
-	log.addHandler(console)
-
-	logfile = 'log-interval.txt'
-
-	global log_init
-
-	if not log_init:
-		if os.path.isfile(logfile):
-			import glob
-			nb_runs = len(glob.glob(logfile+"*"))
-
-			import shutil
-			shutil.move(logfile, logfile+"-"+str(nb_runs-1))
-
-		log_init = True
-
-	fh = logging.FileHandler(logfile)
-	fh.setLevel(logging.INFO)
-	fh.setFormatter(cfmt)
-	log.addHandler(fh)
-
-	return log
-
-LOGGER = create_logger(__name__)
-
+from cubiints import LOGGER
 
 def __get_interval(rms, P, Na, SNR=3):
 
 		# import ipdb; ipdb.set_trace()
 		
 		if np.isnan(P) or np.isnan(rms) or np.isnan(Na) or Na<2:
-			return 0
+			return 0, np.nan
 		else:
 			Nvis = int(np.ceil(SNR**2.*rms**2./((Na-1.)*P**2.)))
-			return Nvis
+			grms = rms**2./((Na-1.)*P**2.) 
+			return Nvis, grms
 
 
 get_interval = np.vectorize(__get_interval)
@@ -259,18 +226,18 @@ def get_mean_n_ant_tf(ant1, ant2, f, time_chunks, freq_chunks, time_col, indices
 
 def get_flag_ratio(time_chunks, freq_chunks, f):
 	"""
-		compute the flag percentage in the different time tchunks
+	compute the flag percentage in the different time tchunks
 
-		Args:
-			time_chunks (list)
-				- list of tuple for the time chunk boundaries
-			freq_chunks (list)
-				- list of frequency tupple for the time chunk boundaries
-			f (boolean array)
-				-flag column from the measurement set
-		returns:
-			flags_ratio (array)
-				-array containing the flag percentage of each time-frequency chunk
+	Args:
+		time_chunks (list)
+			- list of tuple for the time chunk boundaries
+		freq_chunks (list)
+			- list of frequency tupple for the time chunk boundaries
+		f (boolean array)
+			-flag column from the measurement set
+	returns:
+		flags_ratio (array)
+			-array containing the flag percentage of each time-frequency chunk
 	"""
 
 	tsize, fsize = len(time_chunks), len(freq_chunks)
@@ -398,3 +365,20 @@ def build_flag_colunm(tt, minbl=100, obvis=None, freqslice=slice(None), row_chun
 	flag0 = da.from_array(flag0, chunks=(row_chunks, nfreq, ncorr))
 
 	return flag0
+
+
+def imshow_stat(array, savename):
+	"""do an imshow of the computed stats"""
+
+	cmap = 'jet' #'cubehelix'  #'grayas'
+	stretch = 'linear'
+
+	fig, ax1 = plt.subplots()
+	img = plt.imshow(array.squeeze(), cmap=cmap, aspect="auto")
+	cb = fig.colorbar(img, pad=0.01)
+	# cb.set_label("Noise [Jy]",size=30)
+	ax1.set_ylabel("Channel index", size=30)
+	ax1.set_xlabel("Antenna index", size=30)
+	fig.tight_layout()
+	fig.savefig(savename, dpi=200)
+	plt.close(fig)

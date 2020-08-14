@@ -5,3 +5,4 @@ numpydoc
 scipy
 SharedArray
 matplotlib
+psutil

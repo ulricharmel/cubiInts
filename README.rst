@@ -27,11 +27,11 @@ working directory where source is checked out
   
     $ pip install .
 
-.. This package is available on *PYPI*, allowing
+Pre release from git 
 
-.. .. code-block:: bash
+.. code-block:: bash
   
-..    $ pip install cubiints
+    $ pip install -e https://github.com/ulricharmel/cubiInts@v0.2-alpha
 
 =======
 License

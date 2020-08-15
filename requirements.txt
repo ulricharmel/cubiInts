@@ -6,3 +6,4 @@ scipy
 SharedArray
 matplotlib
 psutil
+line-profiler

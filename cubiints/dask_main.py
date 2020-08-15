@@ -288,10 +288,19 @@ def compute_interval_dask_index(ms_opts={}, SNR=3, dvis=False, outdir="./soln-in
 
 
 
-def create_output_dirs(outdir):
+def create_output_dirs(name, outdir):
 	"""create ouput directory for pybdsm log files and output images"""
 
-	outdir = outdir+".pc"
+	if "/" in name:
+		LOGGER.info("Output directory part of out-name will overwrite outdir option")
+		outdir = os.path.dirname(name)
+
+	if not outdir.endswith("/"):
+		if outdir.endswith(".pc"):
+			outdir += "/"
+		else:
+			outdir += ".pc/"
+
 	if os.path.isdir(outdir):
 		LOGGER.info("Output directory already exit from previous run, will make a backup")
 		import glob
@@ -362,7 +371,7 @@ def main():
 
 	if args.usegains is False:
 
-		outdir = create_output_dirs(args.outdir)
+		outdir = create_output_dirs(args.name, args.outdir)
 
 
 		ms_opts = {"DataCol": args.datacol, "ModelCol": args.modelcol, "FluxCol": args.fluxcol, "WeightCol":args.weightcol, "msname": args.ms}
@@ -378,7 +387,7 @@ def main():
 		LOGGER.info("Using %i threads" % ncpu)
 
 		try:
-			compute_interval_dask_index(ms_opts=ms_opts, SNR=args.snr, dvis=False, outdir=outdir, figname=args.name+"-interval", row_chunks=args.rowchunks, minbl=args.minbl, 
+			compute_interval_dask_index(ms_opts=ms_opts, SNR=args.snr, dvis=False, outdir=outdir, figname=os.path.basename(args.name)+"-interval", row_chunks=args.rowchunks, minbl=args.minbl, 
 										tchunk=args.tchunk, fchunk=args.fchunk, save_out=args.save_out, cubi_flags=args.cubi_flags, datachunk=args.datachunk)
 		except:
 			extype, value, tb = sys.exc_info()
@@ -393,6 +402,6 @@ def main():
 		if args.gaintable is None:
 			print("A gaintable must be specified")
 			parser.exit()
-		tint = optimal_time_freq_interval_from_gains(args.gaintable, args.ms, args.Gname, args.tint, args.fint, args.tchunk, verbosity=args.verbose, prefix=args.name)
+		tint = optimal_time_freq_interval_from_gains(args.gaintable, args.ms, args.Gname, args.tint, args.fint, args.tchunk, verbosity=args.verbose, prefix=os.path.basename(args.name))
 		print("optimal interval time-int= {}".format(tint))
 		

@@ -3,7 +3,7 @@ import numba
 from pyrap.tables import table
 
 import sys
-# sys.path.insert(0, '/net/jake/home/ulrich/roibosenv/CubiCal')
+sys.path.insert(0, '/net/jake/home/ulrich/roibosenv/CubiCal')
 # reload(sys)
 # sys.setdefaultencoding('utf-8')
 
@@ -23,7 +23,7 @@ plt.rc('font', family='serif')
 from cubiints import LOGGER
 
 
-def extract_from_db(dbfile, name="G:gain"):
+def extract_from_db(dbfile, name="G:gain", return_freq=False):
 	"""Extract from dbfile"""
 
 	LOGGER.debug("Loading gains database {}".format(dbfile))
@@ -34,12 +34,21 @@ def extract_from_db(dbfile, name="G:gain"):
 
 		gainscube = gains.get_cube()
 		data = gainscube.data[-1] # remove n_dir
+
+		freqs = gains.grid[gains.ax.freq] / 1.0e9
+
 	except Exception as e:
 		# print(e)
 		data = np.load(dbfile)
 		data = data[-1] #,0] # assuming ntchunks is 1, remove n_dir
 
-	return data
+		if return_freq:
+			freqs = np.load(dbfile[:-4]+"_freqs.npy")
+
+	if return_freq:
+		return data, freqs
+	else:
+		return data
 
 def compute_gains_chisq(gobs, avggains, tint=1, fint=1, gerr=1, cross_corr=False):
 	"""compute the chisq of the gains"""
@@ -60,7 +69,7 @@ def compute_gains_chisq(gobs, avggains, tint=1, fint=1, gerr=1, cross_corr=False
 
 	gerr[gerr==0] = 1 # To avoid division by zero
 
-	chisq = np.sum(resid.real**2/gerr**2) + np.sum(resid.imag**2/gerr**2)
+	chisq = np.sum(resid.real**2) + np.sum(resid.imag**2) #/gerr**2 /gerr**2
 
 	return np.array([chisq, num_valid_eqs, n_valid_sols], dtype=float)
 
@@ -188,9 +197,9 @@ def _g_and_jhjinv_from_soln_impl(gobs, jhjinv, alpha, Sigmaalpha, Mt, It, Mv, Iv
     return gobs, jhjinv
 
 
-def optimal_time_freq_interval_from_gains(dbfile, msname, name, tint, fint, tchunk, verbosity=False, prefix="G"):
+def optimal_time_freq_interval_from_gains(dbfile, msname, name, tint, fint, tchunk, verbosity=False, prefix="G", return_freq=True):
 
-	dbgains2 = extract_from_db(dbfile, name=name)#[:,0:1,...]
+	dbgains2, freqs = extract_from_db(dbfile, name, return_freq)#[:,0:1,...]
 	_, nfreq, _, _, _, = dbgains2.shape
 
 	dbgains = dbgains2
@@ -271,7 +280,7 @@ def optimal_time_freq_interval_from_gains(dbfile, msname, name, tint, fint, tchu
 
 	for i, fi in enumerate(fints):
 		# print(fi, len(tints), gaic.shape)
-		ln = ax1.plot(tints[ta//3:], gaic[i, ta//3:]/np.min(gaic[i, :]), linestyle='-', label = "Block = %d"%fi, linewidth=2)
+		ln = ax1.plot(tints[ta//3:], gaic[i, ta//3:]/np.min(gaic[i, :]), linestyle='-', label = "%.2f GHz"%freqs[i], linewidth=2) #/np.min(gaic[i, 3:])
 
 		if lns == None:
 			lns = ln

@@ -44,7 +44,7 @@ def define_time_chunks(timecol, size, scans, jump=1):
                 - list of chunks indices
 	"""
 
-	# import pdb; pdb.set_trace
+	# import pdb; pdb.set_trace()
 
 	unique, tindex = np.unique(timecol, return_index=True)
 	b = abs(np.roll(scans, 1) - scans) > jump
@@ -56,6 +56,9 @@ def define_time_chunks(timecol, size, scans, jump=1):
 	time_chunks = []
 	i=k=0
 
+	LOGGER.info(f"Bounds are {bounds}")
+	LOGGER.info("Number of unique timeslots: {:d}.".format(len(unique)))
+
 	while(i<len(unique)):
 		if b[tindex[i]]:
 			k +=1
@@ -65,6 +68,7 @@ def define_time_chunks(timecol, size, scans, jump=1):
 				te = tindex[i+size]
 				i = i + size
 			else:
+				k +=1
 				te = bounds[k]
 				i = indices[te+1]
 			time_chunks.append((ts,te))
@@ -74,7 +78,7 @@ def define_time_chunks(timecol, size, scans, jump=1):
 			# print("breaking from here", bounds[-1])
 			break
 
-	# print("i, k, after", i, k)
+		# print("i, k, after", i, k)
 
 	LOGGER.info("Found {:d} time chunks from {:d} unique timeslots.".format(len(time_chunks), len(unique)))
 

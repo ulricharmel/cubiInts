@@ -35,7 +35,7 @@ from daskms import xds_from_ms, xds_from_table
 import dask
 import dask.array as da
 from cubiints.tools import *
-from cubiints.aic_functions import optimal_time_freq_interval_from_gains
+from cubiints.aic_functions import optimal_time_freq_interval_from_gains, optimal_time_freq_interval_2D_gains, optimal_time_freq_interval_2D_same_gains
 
 xds = []
 
@@ -162,6 +162,8 @@ def compute_interval_dask_index(ms_opts={}, SNR=3, dvis=False, outdir="./soln-in
 	freq_chunks = define_freq_chunks(fchunk, nfreq)
 
 	time_f = time.time()
+
+	LOGGER.info("Done defining chunks and meta data-- Now to the expensive part")
 
 	if datachunk:
 		indices = [tuple(np.array(datachunk.split("T")[1].split("F"), dtype=int))]
@@ -304,10 +306,10 @@ def create_output_dirs(name, outdir):
 	if os.path.isdir(outdir):
 		LOGGER.info("Output directory already exit from previous run, will make a backup")
 		import glob
-		nb_runs = len(glob.glob(outdir+"*"))
+		nb_runs = len(glob.glob(outdir[:-1]+"*"))
 		
 		import shutil
-		shutil.move(outdir, outdir+"-"+str(nb_runs-1))
+		shutil.move(outdir, outdir[:-1]+"-"+str(nb_runs-1))
 
 	os.mkdir(outdir)
 
@@ -339,8 +341,13 @@ def create_parser():
 	p.add_argument("--gain-name", type=str, help="gain label to index CubiCal parameters database", default="G:gain", dest="Gname")
 	p.add_argument('--usegains', dest='usegains', action='store_true', help="search using gains AIC")
 	p.add_argument('--no-usegains', dest='usegains', action='store_false', help="do not search using gains AIC")
+	p.add_argument('--usejhj', dest='usejhj', action='store_true', help="use the gains errors when computing the AIC")
+	p.add_argument('--addjhj', dest='addjhj', action='store_true', help="add the noise")
+	p.add_argument('--do2d', dest='do2d', action='store_true', help="do a 2D search")
+
 	p.add_argument('--time-int', dest="tint", type=int, help="time interval use for the passed gains")
 	p.add_argument('--freq-int', dest="fint", type=int, help="frequency interval use for the passed gains")
+
 
 	p.add_argument("--outdir", type=str, default="out", help="output directory, default is created in current working directory")
 	p.add_argument("--name", type=str, default="G", help="prefix to use in namimg output files")
@@ -402,6 +409,12 @@ def main():
 		if args.gaintable is None:
 			print("A gaintable must be specified")
 			parser.exit()
-		tint = optimal_time_freq_interval_from_gains(args.gaintable, args.ms, args.Gname, args.tint, args.fint, args.tchunk, verbosity=args.verbose, prefix=os.path.basename(args.name))
+
+		if args.do2d:
+			tint = optimal_time_freq_interval_2D_same_gains(args.gaintable, args.ms, args.Gname, args.tint, args.fint, args.tchunk, verbosity=args.verbose, 																							prefix=os.path.basename(args.name), usejhj=(args.usejhj, args.addjhj)) # 2D -> from
+		else:
+			tint = optimal_time_freq_interval_from_gains(args.gaintable, args.ms, args.Gname, args.tint, args.fint, args.tchunk, verbosity=args.verbose, 
+																							prefix=os.path.basename(args.name), usejhj=(args.usejhj, args.addjhj)) # 2D -> from
 		print("optimal interval time-int= {}".format(tint))
+		print("use jhj was ", args.usejhj) 
 		

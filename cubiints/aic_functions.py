@@ -396,11 +396,11 @@ def optimal_time_freq_interval_2D_gains(dbfile, msname, name, tint, fint, tchunk
 	xi, xy = cs.get_clim()
 	cb = fig.colorbar(cs, ticks=[xi, xy]) #[:,10:]
 	
-	cb.set_label("AIC",size=25)
+	cb.set_label("AIC",size=40)
 
-	plt.xlabel("Time interval",size=30)
-	plt.ylabel("Frequency interval",size=30)
-	plt.tick_params(labelsize=25)
+	plt.xlabel("Time interval",size=40)
+	plt.ylabel("Frequency interval",size=40)
+	plt.tick_params(labelsize=30)
 	
 	# fig.suptitle("${\Delta tf}$ = (%d, %d)"%(tgrid, fgrid*fint), fontsize=10, x=0.5, y=1)
 	fig.tight_layout()

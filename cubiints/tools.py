@@ -1,30 +1,40 @@
 import os
 import numpy as np
 import dask.array as da
+from numba import njit
+import Tigger
 import warnings
 import line_profiler
 profile = line_profiler.LineProfiler()
 
-import matplotlib
-matplotlib.use('agg')
+# import matplotlib
+# matplotlib.use('agg')
 import matplotlib.pyplot as plt
+
+import matplotlib as mpl
+mpl.rcParams.update({'font.size': 11, 'font.family': 'serif'})
+# mpl.use('Agg')
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 from cubiints import LOGGER
 
-def __get_interval(rms, P, Na, SNR=3):
+SNR = 3
 
-		# import ipdb; ipdb.set_trace()
-		
-		if np.isnan(P) or np.isnan(rms) or np.isnan(Na) or Na<2:
-			return 0, np.nan
-		else:
-			Nvis = int(np.ceil(SNR**2.*rms**2./((Na-1.)*P**2.)))
-			grms = rms**2./((Na-1.)*P**2.) 
-			return Nvis, grms
+def __get_interval(rms, P, Na):
+
+	# import ipdb; ipdb.set_trace()
+	
+	if np.isnan(P) or np.isnan(rms) or np.isnan(Na) or Na<2:
+		return 0, np.nan
+	else:
+		Nvis = int(np.ceil(SNR**2.*rms**2./((Na-1.)*P**2.)))
+		grms = rms**2./((Na-1.)*P**2.) 
+		return Nvis, grms
 
 
 get_interval = np.vectorize(__get_interval)
-
 
 def define_time_chunks(timecol, size, scans, jump=1):
 	"""
@@ -54,33 +64,75 @@ def define_time_chunks(timecol, size, scans, jump=1):
 	indices  = np.fromiter(list(map(rmap.__getitem__, timecol)), int)
 
 	time_chunks = []
+	chunk_size = []
 	i=k=0
+	current_chunk = size
+	ts = 0
 
 	LOGGER.info(f"Bounds are {bounds}")
 	LOGGER.info("Number of unique timeslots: {:d}.".format(len(unique)))
 
-	while(i<len(unique)):
-		if b[tindex[i]]:
-			k +=1
-		ts = tindex[i]
-		if (indices[ts]+size)<len(tindex):
-			if tindex[i+size] < bounds[k]:
-				te = tindex[i+size]
-				i = i + size
-			else:
-				k +=1
-				te = bounds[k]
-				i = indices[te+1]
-			time_chunks.append((ts,te))
-		else:
-			te = bounds[-1]
-			time_chunks.append((ts,te))
-			# print("breaking from here", bounds[-1])
-			break
+	last_chunk = False
 
-		# print("i, k, after", i, k)
+	for te, row in enumerate(indices):
+
+		if te == 0:
+			newchunk = False
+		else:
+			newchunk = b[te] or timecol[te]>=timecol[tindex[current_chunk]] or timecol[te]>=timecol[tindex[-1]]
+		if newchunk:
+			if last_chunk:
+				time_chunks.append((ts, len(indices)-1))
+				chunk_size.append(len(indices)-ts)
+				break
+			else:
+				time_chunks.append((ts, te-1))
+				chunk_size.append(te-ts)
+				ts = te
+				current_chunk += size
+				if current_chunk>=len(tindex):
+					current_chunk = -1
+					last_chunk = True
+				# print(current_chunk, "after")
+
+
+
+	# # newchunk = boundary or ts >= chunk_end_ts or time >= chunk_end_time
+
+	# while(i<len(unique)):
+	# 	if b[tindex[i]]:
+	# 		k +=1
+	# 	ts = tindex[i]
+	# 	if (indices[ts]+size)<len(tindex):
+	# 		if tindex[i+size] < bounds[k]:
+	# 			te = tindex[i+size]
+	# 			i = i + size
+	# 		else:
+	# 			k +=1
+	# 			te = bounds[k]
+	# 			try:
+	# 				i = indices[te+1]
+	# 				time_chunks.append((ts,te))
+	# 			except IndexError as e:
+	# 				# i = indices[te]
+	# 				time_chunks.append((ts,te))
+	# 				break
+	# 	else:
+	# 		te = bounds[-1]
+	# 		time_chunks.append((ts,te))
+	# 		# print("breaking from here", bounds[-1])
+	# 		break
+
+	# 	# print("i, k, after", i, k)
 
 	LOGGER.info("Found {:d} time chunks from {:d} unique timeslots.".format(len(time_chunks), len(unique)))
+
+	# LOGGER.info(f"Time chunks are {time_chunks}")
+	# LOGGER.info(f"Chunk sizes are {chunk_size}")
+
+	LOGGER.info("Found {} time chunks: {} {}".format(len(time_chunks),
+                        " ".join(["{}:{}:{}".format(i, r[0], chunk_size[i]) for i, r in enumerate(time_chunks)]),
+                        str(chunk_size[-1])))
 
 	return time_chunks
 
@@ -374,15 +426,19 @@ def build_flag_colunm(tt, minbl=100, obvis=None, freqslice=slice(None), row_chun
 def imshow_stat(array, savename):
 	"""do an imshow of the computed stats"""
 
-	cmap = 'jet' #'cubehelix'  #'grayas'
+	cmap = 'inferno' #'cubehelix'  #'grayas'
 	stretch = 'linear'
 
 	fig, ax1 = plt.subplots()
 	img = plt.imshow(array.squeeze(), cmap=cmap, aspect="auto")
 	cb = fig.colorbar(img, pad=0.01)
 	# cb.set_label("Noise [Jy]",size=30)
-	ax1.set_ylabel("Channel index", size=30)
-	ax1.set_xlabel("Antenna index", size=30)
+	ax1.set_ylabel("Channel index", size=40)
+	ax1.set_xlabel("Antenna index", size=40)
+	plt.tick_params(labelsize=30)
 	fig.tight_layout()
 	fig.savefig(savename, dpi=200)
 	plt.close(fig)
+
+
+

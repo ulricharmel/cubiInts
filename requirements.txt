@@ -1,4 +1,4 @@
-dask-ms
+astro-tigger
 numpy
 numba
 numpydoc
@@ -6,4 +6,7 @@ scipy
 SharedArray
 matplotlib
 psutil
+ipython
 line-profiler
+codex-africanus[dask]
+dask-ms[xarray, zarr]@git+https://github.com/ska-sa/dask-ms.git@master

@@ -17,6 +17,7 @@ import dask.array as da
 from dask.diagnostics import ProgressBar
 from daskms import xds_from_ms, xds_from_table
 from daskms.experimental.zarr import xds_from_zarr, xds_to_zarr
+import random
 # might make for cooler histograms but doesn't work out of the box
 # from astropy.visualization import hist
 
@@ -40,7 +41,7 @@ mpl_logger.setLevel(logging.WARNING)
 from cubiints import LOGGER
 
 def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", 
-                                tchunk=64, fchunk=128, use_corrs=[0,-1], nthreads=4, doplots=True):
+                                tchunk=64, fchunk=128, use_corrs=[0,-1], nthreads=4, doplots=True, maxgroups=12):
     
     msname = ms_opts["msname"]
     
@@ -59,6 +60,7 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals",
     fbin_counts = []
     t0s = []
     tfs = []
+    n_scans = len(xds)
     for ds in xds:
         time = ds.TIME.values
         ut, counts = np.unique(time, return_counts=True)
@@ -126,7 +128,7 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals",
     else:
         table_schema[ms_opts["WeightCol"]] = {'dims':('chan', 'corr')}
     
-    LOGGER.info(f"Found {rbin_counts[0].shape[0]} time chunks and {fbin_counts[0].shape[0]} frequency chunks.")
+    LOGGER.info(f"Found {n_scans} groups, {rbin_counts[0].shape[0]} time chunks and {fbin_counts[0].shape[0]} frequency chunks.")
 
     xds = xds_from_ms(msname,
                     columns=columns,
@@ -135,6 +137,10 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals",
                     table_schema = table_schema
                     )
     
+    if n_scans>maxgroups:
+        xds = random.sample(xds, maxgroups)
+        LOGGER.info(f"{maxgroups} out of the {n_scans} groups will be used for the search!")
+
     out_ds = []
     intervals = np.zeros(len(xds))
     idts = []
@@ -329,17 +335,19 @@ def create_parser():
 	p.add_argument("--ms", type=str, required=True, help="input measurement set (MS)")
 	p.add_argument("--datacol", default="DATA", type=str, help="MS column containing the DATA to be calibrated")
 	p.add_argument("--modelcol", default="MODEL_DATA", type=str, help="MS column containing the model visibilities (2GC only), can also be a tigger skymodel with a de tag (eg model.lsm.html@dE)")
-	p.add_argument("--fluxcol", default="MODEL_DATA", type=str, help="MS column containing the model visibilities for the specific direction (3GC). Can also take difference of columns as in CubiCal")
+	p.add_argument("--fluxcol", default=None, type=str, help="MS column containing the model visibilities for the specific direction (3GC). Can also take difference of columns as in CubiCal")
 	p.add_argument("--weightcol", default="WEIGHT", type=str, help="Weight Column")
 	p.add_argument("--snr", default=3, type=int, help="minimum SNR of the solutions")
 	p.add_argument("--min-bl", default=100, type=float, dest='minbl', help="exclude baselines less than set value")
-	p.add_argument("--freq-chunk", default=128, type=int, dest='fchunk', help="size of frequency chunk to be use by CubiCal")
+	p.add_argument("--freq-chunk", default=128, type=int, dest='fchunk', help="size of frequency chunk to be use by CubiCal, avoid chunks bigger then 128")
 	p.add_argument("--time-chunk", default=64, type=int, dest='tchunk', help="size of time chunk to be use by CubiCal")
 	p.add_argument("--single-chunk", default=None, type=str, dest='datachunk', help="use a specific datachunk like in CubiCal, example DOT0F1")
 	p.add_argument('--cubical-flags', dest='cubi_flags', action='store_true', help="apply cubical flags otherwise only legacy flags are applied")
 
 	p.add_argument("--rowchunks", default=4000, type=int, help="row chunks to be use by dask-ms")
 	p.add_argument("--nthreads", default=12, type=int, help="number of dask threads to use")
+	p.add_argument("--max-scans", default=12, type=int, help="maximum of number of groups (scans and spws) to use for the search")
+
 
 	p.add_argument("--peakflux", default=None, type=float, help="peak flux in the skymodel if model visibilities are not yet computed")
 	p.add_argument("--rms", default=None, type=float, help="rms to use if model visbilities are not yet computed")
@@ -393,7 +401,7 @@ def main():
             t0 = tt.time()
             CT.SNR = args.snr
             compute_interval_dask_index(ms_opts=ms_opts, outdir=outdir, tchunk=args.tchunk, fchunk=args.fchunk, 
-                                                            use_corrs=[0,-1], nthreads=args.nthreads, doplots=args.save_out)
+                                                use_corrs=[0,-1], nthreads=args.nthreads, doplots=args.save_out, maxgroups=args.max_scans)
 
             LOGGER.info(f"Completed in {(tt.time()-t0)/60:.2f} mins")
         except:

@@ -10,7 +10,6 @@ profile = line_profiler.LineProfiler()
 # import matplotlib
 # matplotlib.use('agg')
 import matplotlib.pyplot as plt
-
 import matplotlib as mpl
 mpl.rcParams.update({'font.size': 11, 'font.family': 'serif'})
 # mpl.use('Agg')

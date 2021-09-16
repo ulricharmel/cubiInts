@@ -40,12 +40,12 @@ mpl_logger.setLevel(logging.WARNING)
 
 from cubiints import LOGGER
 
-def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", 
+def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=0,
                                 tchunk=64, fchunk=128, use_corrs=[0,-1], nthreads=4, doplots=True, maxgroups=12):
     
     msname = ms_opts["msname"]
     
-    # chunking infoanwser
+    # chunking info 
     xds = xds_from_ms(msname,
 					  chunks={'row': -1},
 					  columns=['TIME', 'FLAG'],
@@ -136,6 +136,8 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals",
                     group_cols=['FIELD_ID', 'DATA_DESC_ID', 'SCAN_NUMBER'],
                     table_schema = table_schema
                     )
+    
+    xds = [xd for xd in xds if xd.FIELD_ID == field_id]
     
     if n_scans>maxgroups:
         xds = random.sample(xds, maxgroups)
@@ -331,48 +333,48 @@ def create_output_dirs(name, outdir):
 	return outdir
 
 def create_parser():
-	p = argparse.ArgumentParser()
-	p.add_argument("--ms", type=str, required=True, help="input measurement set (MS)")
-	p.add_argument("--datacol", default="DATA", type=str, help="MS column containing the DATA to be calibrated")
-	p.add_argument("--modelcol", default="MODEL_DATA", type=str, help="MS column containing the model visibilities (2GC only), can also be a tigger skymodel with a de tag (eg model.lsm.html@dE)")
-	p.add_argument("--fluxcol", default=None, type=str, help="MS column containing the model visibilities for the specific direction (3GC). Can also take difference of columns as in CubiCal")
-	p.add_argument("--weightcol", default="WEIGHT", type=str, help="Weight Column")
-	p.add_argument("--snr", default=3, type=int, help="minimum SNR of the solutions")
-	p.add_argument("--min-bl", default=100, type=float, dest='minbl', help="exclude baselines less than set value")
-	p.add_argument("--freq-chunk", default=128, type=int, dest='fchunk', help="size of frequency chunk to be use by CubiCal, avoid chunks bigger then 128")
-	p.add_argument("--time-chunk", default=64, type=int, dest='tchunk', help="size of time chunk to be use by CubiCal")
-	p.add_argument("--single-chunk", default=None, type=str, dest='datachunk', help="use a specific datachunk like in CubiCal, example DOT0F1")
-	p.add_argument('--cubical-flags', dest='cubi_flags', action='store_true', help="apply cubical flags otherwise only legacy flags are applied")
+    p = argparse.ArgumentParser()
+    p.add_argument("--ms", type=str, required=True, help="input measurement set (MS)")
+    p.add_argument("--datacol", default="DATA", type=str, help="MS column containing the DATA to be calibrated")
+    p.add_argument("--modelcol", default="MODEL_DATA", type=str, help="MS column containing the model visibilities (2GC only), can also be a tigger skymodel with a de tag (eg model.lsm.html@dE)")
+    p.add_argument("--fluxcol", default=None, type=str, help="MS column containing the model visibilities for the specific direction (3GC). Can also take difference of columns as in CubiCal")
+    p.add_argument("--weightcol", default="WEIGHT", type=str, help="Weight Column")
+    p.add_argument("--snr", default=3, type=int, help="minimum SNR of the solutions")
+    p.add_argument("--min-bl", default=100, type=float, dest='minbl', help="exclude baselines less than set value")
+    p.add_argument("--freq-chunk", default=128, type=int, dest='fchunk', help="size of frequency chunk to be use by CubiCal, avoid chunks bigger then 128")
+    p.add_argument("--time-chunk", default=64, type=int, dest='tchunk', help="size of time chunk to be use by CubiCal")
+    p.add_argument("--single-chunk", default=None, type=str, dest='datachunk', help="use a specific datachunk like in CubiCal, example DOT0F1")
+    p.add_argument('--cubical-flags', dest='cubi_flags', action='store_true', help="apply cubical flags otherwise only legacy flags are applied")
 
-	p.add_argument("--rowchunks", default=4000, type=int, help="row chunks to be use by dask-ms")
-	p.add_argument("--nthreads", default=12, type=int, help="number of dask threads to use")
-	p.add_argument("--max-scans", default=12, type=int, help="maximum of number of groups (scans and spws) to use for the search")
+    p.add_argument("--rowchunks", default=4000, type=int, help="row chunks to be use by dask-ms")
+    p.add_argument("--nthreads", default=12, type=int, help="number of dask threads to use")
+    p.add_argument("--max-scans", default=12, type=int, help="maximum of number of groups (scans and spws) to use for the search")
+    p.add_argument("--field-id", default=0, type=int, help="which field to use")
+
+    p.add_argument("--peakflux", default=None, type=float, help="peak flux in the skymodel if model visibilities are not yet computed")
+    p.add_argument("--rms", default=None, type=float, help="rms to use if model visbilities are not yet computed")
+    p.add_argument("--data-rms", default=False, action='store_true', help="use visibilities only to compute the rms")
+
+    p.add_argument("--same", dest='same', action='store_true', help="use the same solution interval for time and frequency, default is use longer frequency interval")
+    p.add_argument("--gaintable", type=str, help="gain table for second round search with Akaike Information Criterion (AIC)")
+    p.add_argument("--gain-name", type=str, help="gain label to index CubiCal parameters database", default="G:gain", dest="Gname")
+    p.add_argument('--usegains', dest='usegains', action='store_true', help="search using gains AIC")
+    p.add_argument('--no-usegains', dest='usegains', action='store_false', help="do not search using gains AIC")
+    p.add_argument('--usejhj', dest='usejhj', action='store_true', help="use the gains errors when computing the AIC")
+    p.add_argument('--addjhj', dest='addjhj', action='store_true', help="add the noise")
+    p.add_argument('--do2d', dest='do2d', action='store_true', help="do a 2D search")
+
+    p.add_argument('--time-int', dest="tint", type=int, help="time interval use for the passed gains")
+    p.add_argument('--freq-int', dest="fint", type=int, help="frequency interval use for the passed gains")
 
 
-	p.add_argument("--peakflux", default=None, type=float, help="peak flux in the skymodel if model visibilities are not yet computed")
-	p.add_argument("--rms", default=None, type=float, help="rms to use if model visbilities are not yet computed")
-	p.add_argument("--data-rms", default=False, action='store_true', help="use visibilities only to compute the rms")
-	
-	p.add_argument("--same", dest='same', action='store_true', help="use the same solution interval for time and frequency, default is use longer frequency interval")
-	p.add_argument("--gaintable", type=str, help="gain table for second round search with Akaike Information Criterion (AIC)")
-	p.add_argument("--gain-name", type=str, help="gain label to index CubiCal parameters database", default="G:gain", dest="Gname")
-	p.add_argument('--usegains', dest='usegains', action='store_true', help="search using gains AIC")
-	p.add_argument('--no-usegains', dest='usegains', action='store_false', help="do not search using gains AIC")
-	p.add_argument('--usejhj', dest='usejhj', action='store_true', help="use the gains errors when computing the AIC")
-	p.add_argument('--addjhj', dest='addjhj', action='store_true', help="add the noise")
-	p.add_argument('--do2d', dest='do2d', action='store_true', help="do a 2D search")
+    p.add_argument("--outdir", type=str, default="out", help="output directory, default is created in current working directory")
+    p.add_argument("--name", type=str, default="G", help="prefix to use in namimg output files")
+    p.add_argument('--save-out', dest='save_out', action='store_true', help="save all computed statstics in npy files")
 
-	p.add_argument('--time-int', dest="tint", type=int, help="time interval use for the passed gains")
-	p.add_argument('--freq-int', dest="fint", type=int, help="frequency interval use for the passed gains")
-
-
-	p.add_argument("--outdir", type=str, default="out", help="output directory, default is created in current working directory")
-	p.add_argument("--name", type=str, default="G", help="prefix to use in namimg output files")
-	p.add_argument('--save-out', dest='save_out', action='store_true', help="save all computed statstics in npy files")
-
-	p.add_argument("-v", "--verbose", help="increase output verbosity",
-	                action="store_true")
-	return p
+    p.add_argument("-v", "--verbose", help="increase output verbosity",
+                    action="store_true")
+    return p
 
 
 def main():
@@ -400,7 +402,7 @@ def main():
         try:
             t0 = tt.time()
             CT.SNR = args.snr
-            compute_interval_dask_index(ms_opts=ms_opts, outdir=outdir, tchunk=args.tchunk, fchunk=args.fchunk, 
+            compute_interval_dask_index(ms_opts=ms_opts, outdir=outdir, tchunk=args.tchunk, fchunk=args.fchunk, field_id=args.field_id,
                                                 use_corrs=[0,-1], nthreads=args.nthreads, doplots=args.save_out, maxgroups=args.max_scans)
 
             LOGGER.info(f"Completed in {(tt.time()-t0)/60:.2f} mins")

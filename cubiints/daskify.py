@@ -251,7 +251,7 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=
         tfs = ds.tfs.values
         fbin_idx = ds.fbin_idx.values
         fbin_counts = ds.fbin_counts.values
-        intervals[j] = np.nanquantile(tmp[...,3], 0.75)
+        intervals[j] = np.max(tmp[...,3])
         t, f,_,_ = np.unravel_index(np.nanargmax(tmp[...,3]), tmp[...,3].shape)
 
         if doplots:
@@ -280,7 +280,7 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=
         
     # Aggregate the results ------------#
     LOGGER.info("Output intervals {}.".format(intervals))
-    nvis = np.nanquantile(intervals, 0.75)
+    nvis = np.max(intervals)
     chunks_size_ok = True
     f_int = np.ceil(np.sqrt(nvis))
     # if nvis < fchunk:

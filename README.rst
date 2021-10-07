@@ -37,7 +37,7 @@ To run and see options
 
 .. code-block:: bash
 
-    $ daskify --help 
+    $ cubiints --help 
 
 =======
 License

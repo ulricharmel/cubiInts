@@ -33,6 +33,9 @@ Pre release from git
   
     $ pip install -e https://github.com/ulricharmel/cubiInts@v0.2-alpha
 
+.. code-block:: bash
+    $ daskify --help 
+
 =======
 License
 =======

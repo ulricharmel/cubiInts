@@ -275,6 +275,9 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=
 
             CT.makeplot(tmp[t,f,:,:,1], basename + f'T{t}F{f}-ant.png',
                     t0s[t], tf[t], fbin_idx[f], fbin_idx[f] + fbin_counts[f])
+            
+            CT.makeplot(tmp[t,f,:,:,2], basename + f'T{t}F{f}-modelabs.png',
+                    t0s[t], tf[t], fbin_idx[f], fbin_idx[f] + fbin_counts[f])
     
         LOGGER.info("Scan {}/{} done!".format(j+1, len(intervals)))
         

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
-from cubiints.dask_main import main
+# from cubiints.dask_main import main
+from cubiints.daskify import main
 
 main()

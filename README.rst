@@ -7,7 +7,7 @@ cubiints
 |Python Versions|
 |Project License|
 
-A tool for searching optimal solution intervals for the CubiCal package.
+A tool for searching optimal solution intervals for the radio intereferometric calibration.
 
 .. Main website: https://aimfast.readthedocs.io
 

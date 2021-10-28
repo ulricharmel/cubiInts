@@ -1,5 +1,4 @@
 import os
-from typing_extensions import Concatenate
 import numpy as np
 import dask.array as da
 from numba import njit, prange, generated_jit, vectorize
@@ -116,6 +115,7 @@ def rms_chan_ant(data, model, flag, ant1, ant2,
                        fbin_counts, 'f',
 					   tbin_counts, 't',
 					   snr, None,
+					   concatenate=True,
                        align_arrays=False,
                        dtype=np.float64,
                        adjust_chunks={'t': rbin_idx.chunks[0],
@@ -128,7 +128,7 @@ def _rms_chan_ant(data, model, flag, ant1, ant2,
            rbin_idx, rbin_counts, fbin_idx, fbin_counts, tbin_counts, snr):
 	
 	# import pdb; pdb.set_trace()
-	nrow, nchan, ncorr = data[0].shape
+	nrow, nchan, ncorr = data.shape
 
 	nto = rbin_idx.size
 	nfo = fbin_idx.size
@@ -153,12 +153,12 @@ def _rms_chan_ant(data, model, flag, ant1, ant2,
 	for t in range(nto):
 		rowi = rbin_idx2[t]
 		rowf = rbin_idx2[t] + rbin_counts[t]
-		datar = data[0][rowi:rowf]
-		flagr = flag[0][rowi:rowf] #.astype(float)
+		datar = data[rowi:rowf]
+		flagr = flag[rowi:rowf] #.astype(float)
 		ant1p = ant1[rowi:rowf]
 		ant2p = ant2[rowi:rowf]
 
-		modelr = model[0][rowi:rowf]
+		modelr = model[rowi:rowf]
 		
 		for f in range(nfo):
 			chani = fbin_idx2[f]

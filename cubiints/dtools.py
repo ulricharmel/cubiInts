@@ -127,7 +127,7 @@ def rms_chan_ant(data, model, flag, ant1, ant2,
 def _rms_chan_ant(data, model, flag, ant1, ant2,
            rbin_idx, rbin_counts, fbin_idx, fbin_counts, tbin_counts, snr):
 	
-	# import pdb; pdb.set_trace()
+	import pdb; pdb.set_trace()
 	nrow, nchan, ncorr = data.shape
 
 	nto = rbin_idx.size
@@ -150,7 +150,7 @@ def _rms_chan_ant(data, model, flag, ant1, ant2,
 	# ant1p = 1+np.repeat(ant1p[:,np.newaxis], nch, axis=1)
 	# ant2p = 1+np.repeat(ant2p[:,np.newaxis], nch, axis=1)
 
-	for t in range(nto):
+	for t in prange(nto):
 		rowi = rbin_idx2[t]
 		rowf = rbin_idx2[t] + rbin_counts[t]
 		datar = data[rowi:rowf]
@@ -160,7 +160,7 @@ def _rms_chan_ant(data, model, flag, ant1, ant2,
 
 		modelr = model[rowi:rowf]
 		
-		for f in range(nfo):
+		for f in prange(nfo):
 			chani = fbin_idx2[f]
 			chanf = fbin_idx2[f] + fbin_counts[f]
 			data2 = datar[:,chani:chanf]
@@ -169,7 +169,7 @@ def _rms_chan_ant(data, model, flag, ant1, ant2,
 			
 			# with warnings.catch_warnings():
 			# warnings.simplefilter("ignore", category=RuntimeWarning)
-			for aa in range(nant):
+			for aa in prange(nant):
 				dps = data2[(ant1p==aa)|(ant2p==aa)]
 				fps = flag2[(ant1p==aa)|(ant2p==aa)]
 				# dps.compute_chunk_sizes()

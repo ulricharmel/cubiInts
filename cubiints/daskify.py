@@ -41,7 +41,7 @@ mpl_logger.setLevel(logging.WARNING)
 from cubiints import LOGGER
 
 def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=0,
-                                tchunk=64, fchunk=128, use_corrs=[0,-1], nthreads=4, doplots=True, maxgroups=12, snr=3):
+                                tchunk=64, fchunk=128, use_corrs=[0,-1], nthreads=4, doplots=True, maxgroups=12, snr=3, name="G"):
     
     msname = ms_opts["msname"]
     
@@ -302,6 +302,11 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=
     else:
         LOGGER.info("Suggested solution intervals frequency interval = {} and time interval = {} large than chunk sizes. Consider increasing the chunk sizes and reruning for a better suggestion.".format(f_int, t_int))
 
+    file = open(outdir+f"/{name}-solution-intervals.txt", "w")
+    file.write(f"{name}.time_interval = {int(t_int):d}\n")
+    file.write(f"{name}.freq_interval = {int(f_int):d}")
+    file.close()
+
     
 def create_output_dirs(name, outdir):
 	"""create ouput directory for pybdsm log files and output images"""
@@ -353,7 +358,7 @@ def create_parser():
     p.add_argument("--field-id", default=0, type=int, help="which field to use")
 
     p.add_argument("--outdir", type=str, default="out", help="output directory, default is created in current working directory")
-    p.add_argument("--name", type=str, default="G", help="prefix to use in namimg output files")
+    p.add_argument("--name", type=str, default="G", help="prefix to use in namimg output files (should be the gain term for quartical")
     p.add_argument('--save-out', dest='save_out', action='store_true', help="save all computed statstics in npy files")
 
     p.add_argument("-v", "--verbose", help="increase output verbosity",
@@ -384,7 +389,7 @@ def main():
     try:
         t0 = tt.time()
         compute_interval_dask_index(ms_opts=ms_opts, outdir=outdir, tchunk=args.tchunk, fchunk=args.fchunk, field_id=args.field_id,
-                                            use_corrs=[0,-1], nthreads=args.nthreads, doplots=args.save_out, maxgroups=args.max_scans, snr=args.snr)
+                                            use_corrs=[0,-1], nthreads=args.nthreads, doplots=args.save_out, maxgroups=args.max_scans, snr=args.snr, name=args.name)
 
         LOGGER.info(f"Completed in {(tt.time()-t0)/60:.2f} mins")
     except:

@@ -336,7 +336,7 @@ def main():
         for handler in LOGGER.handlers:
             handler.setLevel(logging.INFO)
 
-    LOGGER.info("started cubiints " + " ".join(sys.argv[1:]))
+    LOGGER.info("started snr-ints " + " ".join(sys.argv[1:]))
 
     outdir = create_output_dirs(args.name, args.outdir)
 

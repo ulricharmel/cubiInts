@@ -24,7 +24,7 @@ setup(name=pkg,
       author="Ulrich A. Mbou Sob",
       author_email="mulricharmel@gmail.com",
       packages=find_packages(),
-      # url="https://github.com/Athanaseus/aimfast",
+      # url="https://github.com/----",
       license="GNU GPL 3",
       classifiers=["Development Status :: 4 - Beta",
                    "Intended Audience :: Developers",
@@ -46,5 +46,5 @@ setup(name=pkg,
       #                                    "AegeanTools"]},
       python_requires='>=3.6',
       include_package_data=True,
-      scripts=['cubiints/bin/cubiints']
+      scripts=['cubiints/bin/snr-ints']
       )

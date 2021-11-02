@@ -1,7 +1,8 @@
 import os
 import numpy as np
 import dask.array as da
-from numba import njit
+from numba import njit, prange, generated_jit, vectorize
+from numba.typed import List
 import Tigger
 import warnings
 import line_profiler
@@ -12,44 +13,102 @@ profile = line_profiler.LineProfiler()
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 mpl.rcParams.update({'font.size': 11, 'font.family': 'serif'})
-# mpl.use('Agg')
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 from cubiints import LOGGER
 
-SNR = 3
+@njit(fastmath=True, nogil=True, parallel=True, cache=True)
+def get_interval(rms, P, Na, SNR):
+	Nvis = np.empty(len(rms))
+	grms = np.empty(len(rms))
 
-def __get_interval(rms, P, Na):
+	for i in prange(len(rms)):
+		if np.isnan(P[i]): 
+			rr, pp = 0, np.nan
+		elif np.isnan(rms[i]):
+			rr, pp = 0, np.nan
+		elif np.isnan(Na[i]):
+			rr, pp = 0, np.nan
+		elif Na[i]<2:
+			rr, pp = 0, np.nan
+		else:
+			rr = int(np.ceil(SNR**2.*rms[i]**2./((Na[i]-1.)*P[i]**2.)))
+			pp = rms[i]**2./((Na[i]-1.)*P[i]**2.) 
 
-    # import ipdb; ipdb.set_trace()
+		Nvis[i], grms[i] = rr, pp
+	
+	return Nvis, grms
+
+@njit(fastmath=True, nogil=True, parallel=True, cache=True)
+def np_apply_along_2axis(func1d, arr):
+    # axis (0 and 2, we assume the data ndim is 3)
+    result = np.empty(arr.shape[1])
+    for i in prange(len(result)):
+        result[i] = func1d(arr[:, i, :])
     
-    if np.isnan(P) or np.isnan(rms) or np.isnan(Na) or Na<2:
-        return 0, np.nan
-    else:
-        Nvis = int(np.ceil(SNR**2.*rms**2./((Na-1.)*P**2.)))
-        grms = rms**2./((Na-1.)*P**2.) 
-        return Nvis, grms
+    return result
 
-get_interval = np.vectorize(__get_interval)
+@njit(fastmath=True, nogil=True, parallel=True, cache=True)
+def np_apply_along_axis(func1d, arr):
+    # axis (0 we assume the data ndim is 2)
+    result = np.empty(arr.shape[1])
+    for i in prange(len(result)):
+        result[i] = func1d(arr[:, i])
+    
+    return result
+
+@njit
+def np2Dmean(array):
+    return np_apply_along_2axis(np.nanmean, array)
+
+@njit
+def np2Dstd(array):
+    return np_apply_along_2axis(np.nanstd, array)
+
+@njit
+def np1Dsum(array):
+    return np_apply_along_axis(np.nansum, array)
+
+@njit
+def maskdata(rps):
+	nt, nf, nc = rps.shape
+
+	for t in range(nt):
+		for f in range(nf):
+			for c in range(nc):
+				if rps[t,f,c] == 0:
+					rps[t,f,c] = np.nan
+	return rps
+
+@njit
+def maskflag(rps):
+	nt, nf, nc = rps.shape
+	for t in range(nt):
+		for f in range(nf):
+			for c in range(nc):
+				if rps[t,f,c] == 0:
+					rps[t,f,c] = 1
+				else:
+					rps[t,f,c] = np.nan
+	
+	return rps
 
 def rms_chan_ant(data, model, flag, ant1, ant2,
-           rbin_idx, rbin_counts, fbin_idx, fbin_counts, tbin_counts):
+           rbin_idx, fbin_idx, fbin_counts, tbin_counts, nch, snr):
 
 	nant = da.maximum(ant1.max(), ant2.max()).compute() + 1
-	nch = fbin_counts[0].compute()
+	# nch = fbin_counts[0].compute()
 	res = da.blockwise(_rms_chan_ant, 'tfnp5',
                        data, 'tfc',
                        model, 'tfc',
                        flag, 'tfc',
                        ant1, 't',
                        ant2, 't',
-                       rbin_idx, 't',
-                       rbin_counts, 't',
-                       fbin_idx, 'f',
                        fbin_counts, 'f',
 					   tbin_counts, 't',
+					   snr, None,
+					   concatenate=True,
                        align_arrays=False,
                        dtype=np.float64,
                        adjust_chunks={'t': rbin_idx.chunks[0],
@@ -57,77 +116,38 @@ def rms_chan_ant(data, model, flag, ant1, ant2,
                        new_axes={'n':nch, 'p': nant, '5': 5})
 	return res
 
-# @njit(fastmath=True, nogil=True)
-def _rms_chan_ant(data, model, flag, ant1, ant2,
-           rbin_idx, rbin_counts, fbin_idx, fbin_counts, tbin_counts):
+@njit(fastmath=True, nogil=True, parallel=True, cache=True)
+def _rms_chan_ant(data, model, flag, ant1, ant2, fbin_counts, tbin_counts, snr):
 	
-	nrow, nchan, ncorr = data[0].shape
-
-	nto = rbin_idx.size
-	nfo = fbin_idx.size
 	uant1 = np.unique(ant1)
 	uant2 = np.unique(ant2)
 	nant = np.maximum(uant1.max(), uant2.max()) + 1
 	nch = fbin_counts[0]
 
-	# account for chunk indexing
-	rbin_idx2 = rbin_idx - rbin_idx.min()
-	fbin_idx2 = fbin_idx - fbin_idx.min()
-	
 	# init output array
-	out = np.zeros((nto, nfo, nch, nant, 5), dtype=np.float64)
-
-	# import pdb; pdb.set_trace()
-
-	# nch = fbin_counts[0]
-	# ant1p = 1+np.repeat(ant1p[:,np.newaxis], nch, axis=1)
-	# ant2p = 1+np.repeat(ant2p[:,np.newaxis], nch, axis=1)
-
-	for t in range(nto):
-		rowi = rbin_idx2[t]
-		rowf = rbin_idx2[t] + rbin_counts[t]
-		datar = data[0][rowi:rowf]
-		flagr = flag[0][rowi:rowf].astype(float)
-		ant1p = ant1[rowi:rowf]
-		ant2p = ant2[rowi:rowf]
-
-		modelr = model[0][rowi:rowf]
+	out = np.zeros((1,1, nch, nant, 5), dtype=np.float64)
 		
-		for f in range(nfo):
-			chani = fbin_idx2[f]
-			chanf = fbin_idx2[f] + fbin_counts[f]
-			data2 = datar[:,chani:chanf]
-			flag2 = flagr[:,chani:chanf]
-			model2 = modelr[:,chani:chanf]
+	for aa in prange(nant):
+		dps = data[(ant1==aa)|(ant2==aa)]
+		fps = flag[(ant1==aa)|(ant2==aa)]
+		# dps.compute_chunk_sizes()
+		# rps = np.zeros(dps.shape, dtype=dps.dtype)
+		rps = dps[:,1:,:] - dps[:,:-1,:]
+		# rps[:,0,:] = rps[:,1,:]
+		rps = maskdata(rps)
+		fps = maskflag(fps)
 
+		out[0, 0, 1:, aa, 0] =  np2Dstd(rps)
+		out[0, 0, 0, aa, 0] =  out[0, 0, 1, aa, 0]
+		out[0, 0, :, aa, 1] =  np1Dsum(fps[...,0])/tbin_counts[0]
 
-			with warnings.catch_warnings():
-				warnings.simplefilter("ignore", category=RuntimeWarning)
-				for aa in range(nant):
-					dps = data2[(ant1p==aa)|(ant2p==aa)]
-					fps = flag2[(ant1p==aa)|(ant2p==aa)]
-					# dps.compute_chunk_sizes()
-					# rps = np.zeros(dps.shape, dtype=dps.dtype)
-					rps = dps[:,1:,:] - dps[:,:-1,:]
-					# rps[:,0,:] = rps[:,1,:]
-					
-					rps[rps==0] = np.nan
-					fps[fps!=0] = np.nan
-					fps[fps==0] = 1.
+		mps = model[(ant1==aa)|(ant2==aa)]
+		mps = np.abs(mps)
+		mps = maskdata(mps)
+		out[0, 0, :, aa, 2] = np2Dmean(mps) 
 
-					out[t,f, 1:, aa, 0] =  np.nanstd(rps, axis=(0,2))
-					out[t,f, 0, aa, 0] =  out[t,f, 1, aa, 0]
-					out[t,f, :, aa, 1] =  (np.nansum(fps[...,0], axis=0))/(tbin_counts[t])
-					# compute the model in brute force way
-					# if model_col:
-					mps = model2[(ant1p==aa)|(ant2p==aa)]
-					mps = da.absolute(mps)
-					mps[mps==0] = np.nan
-					out[t,f, :, aa, 2] = np.nanmean(mps, axis=(0,2)) 
-
-					out[t,f, :, aa, 3], out[t, f, :, aa, 4]  = get_interval(out[t,f,:,aa,0], out[t,f,:,aa,2], out[t,f,:,aa,1])
-					# else:
-						# out[:, aa, 2] = flux
+		out[0, 0, :, aa, 3], out[0, 0, :, aa, 4]  = get_interval(out[0, 0, :,aa,0], out[0, 0, :,aa,2], out[0, 0, :,aa,1], snr)
+			
 	
 	return out
 

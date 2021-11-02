@@ -4,10 +4,6 @@
 import argparse
 import matplotlib as mpl
 mpl.rcParams.update({'font.size': 11, 'font.family': 'serif'})
-# mpl.use('Agg')
-import matplotlib.pyplot as plt
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-from optparse import OptionParser
 import os
 import sys
 import numpy as np
@@ -18,8 +14,6 @@ from dask.diagnostics import ProgressBar
 from daskms import xds_from_ms, xds_from_table
 from daskms.experimental.zarr import xds_from_zarr, xds_to_zarr
 import random
-# might make for cooler histograms but doesn't work out of the box
-# from astropy.visualization import hist
 
 import sys
 import os
@@ -31,7 +25,7 @@ try:
 except:
 	import pdb
 
-import cubiints.dtools as CT
+from cubiints.dtools import rms_chan_ant, makeplot, model_from_lsm
 
 import time as tt
 import logging 
@@ -41,11 +35,13 @@ mpl_logger.setLevel(logging.WARNING)
 from cubiints import LOGGER
 
 def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=0,
-                                tchunk=64, fchunk=128, use_corrs=[0,-1], nthreads=4, doplots=True, maxgroups=12):
+                                tchunk=64, fchunk=128, use_corrs=[0,-1], nthreads=4, doplots=True, maxgroups=12, snr=3, name="G"):
     
     msname = ms_opts["msname"]
     
     # chunking info 
+    schema = {}
+    schema['FLAG'] = {'dims': ('chan', 'corr')}
     xds = xds_from_ms(msname,
 					  chunks={'row': -1},
 					  columns=['TIME', 'FLAG'],
@@ -146,28 +142,21 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=
     out_ds = []
     intervals = np.zeros(len(xds))
     idts = []
-    # LOGGER.info(f"{xds}")
-    # LOGGER.info(f"len of xds is {len(xds)}")
-    # import pdb; pdb.set_trace()
+
     for i, ds in enumerate(xds):
         ds = ds.sel(corr=use_corrs)
 
         data = ds.get(datacol).data
-        # shape = resid.shape
-        # chnks = resid.chunks
-        # resid = (da.random.standard_normal(size=shape, chunks=chnks) +
-        # 			1.0j * da.random.standard_normal(size=shape, chunks=chnks))
+        
         weight = ds.get(weightcol).data
         if weight.ndim != 3:
             weight = da.broadcast_to(weight[:,None,:], data.shape)
-		# resid = resid/da.sqrt(2 * weight)
-		# weight = da.ones(shape, chunks=chnks)/2.0
+		
         flag = ds.get("FLAG").data
         flag_row = ds.get("FLAG_ROW").data
         flag = da.logical_or(flag, flag_row[:,np.newaxis,np.newaxis])
 
         weight *= da.logical_not(flag)
-		# flag = da.zeros(shape, chunks=chnks, dtype=bool)
         ant1 = ds.ANTENNA1.data
         ant2 = ds.ANTENNA2.data
 
@@ -180,44 +169,29 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=
                 model -= modelsub
             model *=weight
         else:
-            complexflux = CT.model_from_lsm(ms_opts["ModelCol"])
+            complexflux = model_from_lsm(ms_opts["ModelCol"])
             model = ds.get("MODEL_DATA").data
             model[:,:,:] = complexflux
             model *=weight
-
-		# ncorr = resid.shape[0]
-
-		# time = ds.TIME.values
-		# utime = np.unique(time)
-
-		# spw = xds_from_table(msname + '::SPECTRAL_WINDOW')
-		# freq = spw[0].CHAN_FREQ.values
 
         field = ds.FIELD_ID
         ddid = ds.DATA_DESC_ID
         scan = ds.SCAN_NUMBER
 
-        tmp_rms = CT.rms_chan_ant(data, model, flag, ant1, ant2,
-				    rbin_idx[i], rbin_counts[i],
-				    fbin_idx[i], fbin_counts[i], tbin_counts[i])
+        tmp_rms = rms_chan_ant(data, model, flag, ant1, ant2,
+				    rbin_idx[i], fbin_idx[i], fbin_counts[i], tbin_counts[i], fchunk, snr)
         
-        # nvis = da.zeros(1)
-        # nvis[0] = da.nanmax(tmp_rms[...,3])
-
         d = xr.Dataset(
 			data_vars={'data': (('time', 'freq', 'nfreq', 'antenna', 'corr'), tmp_rms),
 					   'fbin_idx': (('freq'), fbin_idx[i]),
 					   'fbin_counts': (('freq'), fbin_counts[i]),
-					   't0s': (('time'), t0s[i]),
-					   'tfs': (('time'), tfs[i]),
+					   't0s': (('time'), t0s[i]), #t0s
+					   'tfs': (('time'), tfs[i]), #tfs
                        },
 			attrs = {'FIELD_ID': ds.FIELD_ID,
 					 'DATA_DESC_ID': ds.DATA_DESC_ID,
 					 'SCAN_NUMBER': ds.SCAN_NUMBER,
                     },
-			# coords={'time': (('time'), utime),
-			# 		'freq': (('freq'), freq),
-			# 		'corr': (('corr'), np.arange(ncorr))}
 		)
 
         idt = f'::F{ds.FIELD_ID}_D{ds.DATA_DESC_ID}_S{ds.SCAN_NUMBER}'
@@ -225,8 +199,7 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=
         idts.append(idt)
 
     with ProgressBar():
-        dask.compute(out_ds, 
-                     optimize_graph=True, num_workers=nthreads) #
+        dask.compute(out_ds, optimize_graph=True, num_workers=nthreads) #  
 
     #--------plot the results---------------------#
     #'nvis':(('nvis'), nvis)
@@ -238,14 +211,9 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=
             if not os.path.isdir(outdir+"/" + f'/field{field}'):
                 os.system('mkdir '+ outdir+"/"+ f'/field{field}')
 
-            spw = ds.DATA_DESC_ID
-            # if not os.path.isdir(outdir+"/" + f'/field{field}' + f'/spw{spw}'):
-            #     os.system('mkdir '+ outdir+"/" + f'/field{field}' + f'/spw{spw}')
-
+            spw = ds.DATA_DESC_ID    
             scan = ds.SCAN_NUMBER
-            # if not os.path.isdir(outdir+"/" + f'/field{field}' + f'/spw{spw}' + f'/scan{scan}'):
-            #     os.system('mkdir '+ outdir+"/" + f'/field{field}' + f'/spw{spw}'+ f'/scan{scan}')
-
+            
         tmp = ds.data.values
         t0s = ds.t0s.values
         tfs = ds.tfs.values
@@ -256,27 +224,17 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=
 
         if doplots:
             basename = outdir + f'/field{field}/SPW{spw}-SCAN{scan}-'
-            # ntime, nfreq, _,_,_ = tmp.shape
-            # if len(os.listdir(basename)):
-            #     LOGGER.info(f"Removing contents of {basename} folder")
-            #     try:
-            #         os.system(f'rm {basename}*.png')
-            #     except:
-            #         pass
-            
-            # for t in range(ntime):
-            #     for f in range(nfreq):
-
-            CT.makeplot(tmp[t,f,:,:,3], basename + f'T{t}F{f}-nv_nt.png',
+        
+            makeplot(tmp[t,f,:,:,3], basename + f'T{t}F{f}-nv_nt.png',
                     t0s[t], tf[t], fbin_idx[f], fbin_idx[f] + fbin_counts[f])
 
-            CT.makeplot(tmp[t,f,:,:,0], basename + f'T{t}F{f}-rms.png',
+            makeplot(tmp[t,f,:,:,0], basename + f'T{t}F{f}-rms.png',
                     t0s[t], tf[t], fbin_idx[f], fbin_idx[f] + fbin_counts[f])
 
-            CT.makeplot(tmp[t,f,:,:,1], basename + f'T{t}F{f}-ant.png',
+            makeplot(tmp[t,f,:,:,1], basename + f'T{t}F{f}-ant.png',
                     t0s[t], tf[t], fbin_idx[f], fbin_idx[f] + fbin_counts[f])
             
-            CT.makeplot(tmp[t,f,:,:,2], basename + f'T{t}F{f}-modelabs.png',
+            makeplot(tmp[t,f,:,:,2], basename + f'T{t}F{f}-modelabs.png',
                     t0s[t], tf[t], fbin_idx[f], fbin_idx[f] + fbin_counts[f])
     
         LOGGER.info("Scan {}/{} done!".format(j+1, len(intervals)))
@@ -300,6 +258,11 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=
         LOGGER.info("Suggested solution intervals based on chunks sizes frequency interval = {} and time interval = {}.".format(f_int, t_int))
     else:
         LOGGER.info("Suggested solution intervals frequency interval = {} and time interval = {} large than chunk sizes. Consider increasing the chunk sizes and reruning for a better suggestion.".format(f_int, t_int))
+
+    file = open(outdir+f"/{name}-solution-intervals.txt", "w")
+    file.write(f"{name}.time_interval = {int(t_int):d}\n")
+    file.write(f"{name}.freq_interval = {int(f_int):d}")
+    file.close()
 
     
 def create_output_dirs(name, outdir):
@@ -340,39 +303,18 @@ def create_parser():
     p.add_argument("--ms", type=str, required=True, help="input measurement set (MS)")
     p.add_argument("--datacol", default="DATA", type=str, help="MS column containing the DATA to be calibrated")
     p.add_argument("--modelcol", default="MODEL_DATA", type=str, help="MS column containing the model visibilities (2GC only), can also be a tigger skymodel with a de tag (eg model.lsm.html@dE)")
-    p.add_argument("--fluxcol", default=None, type=str, help="MS column containing the model visibilities for the specific direction (3GC). Can also take difference of columns as in CubiCal")
+    p.add_argument("--fluxcol", default=None, type=str, help="MS column containing the model visibilities for the specific direction (3GC). Can also take difference of columns as in CubiCal (D1-D2)")
     p.add_argument("--weightcol", default="WEIGHT", type=str, help="Weight Column")
     p.add_argument("--snr", default=3, type=int, help="minimum SNR of the solutions")
-    p.add_argument("--min-bl", default=100, type=float, dest='minbl', help="exclude baselines less than set value")
     p.add_argument("--freq-chunk", default=128, type=int, dest='fchunk', help="size of frequency chunk to be use by CubiCal, avoid chunks bigger then 128")
     p.add_argument("--time-chunk", default=64, type=int, dest='tchunk', help="size of time chunk to be use by CubiCal")
-    p.add_argument("--single-chunk", default=None, type=str, dest='datachunk', help="use a specific datachunk like in CubiCal, example DOT0F1")
-    p.add_argument('--cubical-flags', dest='cubi_flags', action='store_true', help="apply cubical flags otherwise only legacy flags are applied")
 
-    p.add_argument("--rowchunks", default=4000, type=int, help="row chunks to be use by dask-ms")
     p.add_argument("--nthreads", default=12, type=int, help="number of dask threads to use")
-    p.add_argument("--max-scans", default=12, type=int, help="maximum of number of groups (scans and spws) to use for the search")
+    p.add_argument("--max-scans", default=12, type=int, help="maximum of number of groups (scans and spws) to use for the search, for very large datasets")
     p.add_argument("--field-id", default=0, type=int, help="which field to use")
 
-    p.add_argument("--peakflux", default=None, type=float, help="peak flux in the skymodel if model visibilities are not yet computed")
-    p.add_argument("--rms", default=None, type=float, help="rms to use if model visbilities are not yet computed")
-    p.add_argument("--data-rms", default=False, action='store_true', help="use visibilities only to compute the rms")
-
-    p.add_argument("--same", dest='same', action='store_true', help="use the same solution interval for time and frequency, default is use longer frequency interval")
-    p.add_argument("--gaintable", type=str, help="gain table for second round search with Akaike Information Criterion (AIC)")
-    p.add_argument("--gain-name", type=str, help="gain label to index CubiCal parameters database", default="G:gain", dest="Gname")
-    p.add_argument('--usegains', dest='usegains', action='store_true', help="search using gains AIC")
-    p.add_argument('--no-usegains', dest='usegains', action='store_false', help="do not search using gains AIC")
-    p.add_argument('--usejhj', dest='usejhj', action='store_true', help="use the gains errors when computing the AIC")
-    p.add_argument('--addjhj', dest='addjhj', action='store_true', help="add the noise")
-    p.add_argument('--do2d', dest='do2d', action='store_true', help="do a 2D search")
-
-    p.add_argument('--time-int', dest="tint", type=int, help="time interval use for the passed gains")
-    p.add_argument('--freq-int', dest="fint", type=int, help="frequency interval use for the passed gains")
-
-
     p.add_argument("--outdir", type=str, default="out", help="output directory, default is created in current working directory")
-    p.add_argument("--name", type=str, default="G", help="prefix to use in namimg output files")
+    p.add_argument("--name", type=str, default="G", help="prefix to use in namimg output files (should be the gain term for quartical")
     p.add_argument('--save-out', dest='save_out', action='store_true', help="save all computed statstics in npy files")
 
     p.add_argument("-v", "--verbose", help="increase output verbosity",
@@ -394,27 +336,22 @@ def main():
         for handler in LOGGER.handlers:
             handler.setLevel(logging.INFO)
 
-    LOGGER.info("started daskints " + " ".join(sys.argv[1:]))
+    LOGGER.info("started cubiints " + " ".join(sys.argv[1:]))
 
-    if args.usegains is False:
+    outdir = create_output_dirs(args.name, args.outdir)
 
-        outdir = create_output_dirs(args.name, args.outdir)
+    ms_opts = {"DataCol": args.datacol, "ModelCol": args.modelcol, "FluxCol": args.fluxcol, "WeightCol":args.weightcol, "msname": args.ms}
 
-        ms_opts = {"DataCol": args.datacol, "ModelCol": args.modelcol, "FluxCol": args.fluxcol, "WeightCol":args.weightcol, "msname": args.ms}
+    try:
+        t0 = tt.time()
+        compute_interval_dask_index(ms_opts=ms_opts, outdir=outdir, tchunk=args.tchunk, fchunk=args.fchunk, field_id=args.field_id,
+                                            use_corrs=[0,-1], nthreads=args.nthreads, doplots=args.save_out, maxgroups=args.max_scans, snr=args.snr, name=args.name)
 
-        try:
-            t0 = tt.time()
-            CT.SNR = args.snr
-            compute_interval_dask_index(ms_opts=ms_opts, outdir=outdir, tchunk=args.tchunk, fchunk=args.fchunk, field_id=args.field_id,
-                                                use_corrs=[0,-1], nthreads=args.nthreads, doplots=args.save_out, maxgroups=args.max_scans)
+        LOGGER.info(f"Completed in {(tt.time()-t0)/60:.2f} mins")
+    except:
+        extype, value, tb = sys.exc_info()
+        traceback.print_exc()
+        pdb.post_mortem(tb)
 
-            LOGGER.info(f"Completed in {(tt.time()-t0)/60:.2f} mins")
-        except:
-            extype, value, tb = sys.exc_info()
-            traceback.print_exc()
-            pdb.post_mortem(tb)
-
-        os.system('mv log-interval.txt %s/'%outdir)
+    os.system('mv log-interval.txt %s/'%outdir)
     
-    else:
-        LOGGER.info("Exiting this option not yet implemented.............")

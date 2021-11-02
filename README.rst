@@ -37,7 +37,7 @@ To run and see options
 
 .. code-block:: bash
 
-    $ cubiints --help 
+    $ snr-ints --help 
 
 =======
 License

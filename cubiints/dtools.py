@@ -13,14 +13,10 @@ profile = line_profiler.LineProfiler()
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 mpl.rcParams.update({'font.size': 11, 'font.family': 'serif'})
-# mpl.use('Agg')
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 from cubiints import LOGGER
-
-# SNR = 3
 
 @njit(fastmath=True, nogil=True, parallel=True, cache=True)
 def get_interval(rms, P, Na, SNR):
@@ -99,7 +95,7 @@ def maskflag(rps):
 	return rps
 
 def rms_chan_ant(data, model, flag, ant1, ant2,
-           rbin_idx, rbin_counts, fbin_idx, fbin_counts, tbin_counts, nch, snr):
+           rbin_idx, fbin_idx, fbin_counts, tbin_counts, nch, snr):
 
 	nant = da.maximum(ant1.max(), ant2.max()).compute() + 1
 	# nch = fbin_counts[0].compute()
@@ -109,9 +105,6 @@ def rms_chan_ant(data, model, flag, ant1, ant2,
                        flag, 'tfc',
                        ant1, 't',
                        ant2, 't',
-                       rbin_idx, 't',
-                       rbin_counts, 't',
-                       fbin_idx, 'f',
                        fbin_counts, 'f',
 					   tbin_counts, 't',
 					   snr, None,
@@ -123,75 +116,38 @@ def rms_chan_ant(data, model, flag, ant1, ant2,
                        new_axes={'n':nch, 'p': nant, '5': 5})
 	return res
 
-# @njit(fastmath=True, nogil=True, parallel=True, cache=True)
-def _rms_chan_ant(data, model, flag, ant1, ant2,
-           rbin_idx, rbin_counts, fbin_idx, fbin_counts, tbin_counts, snr):
+@njit(fastmath=True, nogil=True, parallel=True, cache=True)
+def _rms_chan_ant(data, model, flag, ant1, ant2, fbin_counts, tbin_counts, snr):
 	
-	import pdb; pdb.set_trace()
-	nrow, nchan, ncorr = data.shape
-
-	nto = rbin_idx.size
-	nfo = fbin_idx.size
 	uant1 = np.unique(ant1)
 	uant2 = np.unique(ant2)
 	nant = np.maximum(uant1.max(), uant2.max()) + 1
 	nch = fbin_counts[0]
 
-	# account for chunk indexing
-	rbin_idx2 = rbin_idx - rbin_idx.min()
-	fbin_idx2 = fbin_idx - fbin_idx.min()
-	
 	# init output array
-	out = np.zeros((nto, nfo, nch, nant, 5), dtype=np.float64)
-
-	# import pdb; pdb.set_trace()
-
-	# nch = fbin_counts[0]
-	# ant1p = 1+np.repeat(ant1p[:,np.newaxis], nch, axis=1)
-	# ant2p = 1+np.repeat(ant2p[:,np.newaxis], nch, axis=1)
-
-	for t in prange(nto):
-		rowi = rbin_idx2[t]
-		rowf = rbin_idx2[t] + rbin_counts[t]
-		datar = data[rowi:rowf]
-		flagr = flag[rowi:rowf] #.astype(float)
-		ant1p = ant1[rowi:rowf]
-		ant2p = ant2[rowi:rowf]
-
-		modelr = model[rowi:rowf]
+	out = np.zeros((1,1, nch, nant, 5), dtype=np.float64)
 		
-		for f in prange(nfo):
-			chani = fbin_idx2[f]
-			chanf = fbin_idx2[f] + fbin_counts[f]
-			data2 = datar[:,chani:chanf]
-			flag2 = flagr[:,chani:chanf]
-			model2 = modelr[:,chani:chanf]
+	for aa in prange(nant):
+		dps = data[(ant1==aa)|(ant2==aa)]
+		fps = flag[(ant1==aa)|(ant2==aa)]
+		# dps.compute_chunk_sizes()
+		# rps = np.zeros(dps.shape, dtype=dps.dtype)
+		rps = dps[:,1:,:] - dps[:,:-1,:]
+		# rps[:,0,:] = rps[:,1,:]
+		rps = maskdata(rps)
+		fps = maskflag(fps)
+
+		out[0, 0, 1:, aa, 0] =  np2Dstd(rps)
+		out[0, 0, 0, aa, 0] =  out[0, 0, 1, aa, 0]
+		out[0, 0, :, aa, 1] =  np1Dsum(fps[...,0])/tbin_counts[0]
+
+		mps = model[(ant1==aa)|(ant2==aa)]
+		mps = np.abs(mps)
+		mps = maskdata(mps)
+		out[0, 0, :, aa, 2] = np2Dmean(mps) 
+
+		out[0, 0, :, aa, 3], out[0, 0, :, aa, 4]  = get_interval(out[0, 0, :,aa,0], out[0, 0, :,aa,2], out[0, 0, :,aa,1], snr)
 			
-			# with warnings.catch_warnings():
-			# warnings.simplefilter("ignore", category=RuntimeWarning)
-			for aa in prange(nant):
-				dps = data2[(ant1p==aa)|(ant2p==aa)]
-				fps = flag2[(ant1p==aa)|(ant2p==aa)]
-				# dps.compute_chunk_sizes()
-				# rps = np.zeros(dps.shape, dtype=dps.dtype)
-				rps = dps[:,1:,:] - dps[:,:-1,:]
-				# rps[:,0,:] = rps[:,1,:]
-				rps = maskdata(rps)
-				fps = maskflag(fps)
-
-				out[t,f, 1:, aa, 0] =  np2Dstd(rps)
-				out[t,f, 0, aa, 0] =  out[t,f, 1, aa, 0]
-				out[t,f, :, aa, 1] =  np1Dsum(fps[...,0])/tbin_counts[t]
-				# compute the model in brute force way
-				# if model_col:
-				mps = model2[(ant1p==aa)|(ant2p==aa)]
-				mps = np.abs(mps)
-				mps = maskdata(mps)
-				out[t,f, :, aa, 2] = np2Dmean(mps) 
-
-				out[t,f, :, aa, 3], out[t, f, :, aa, 4]  = get_interval(out[t,f,:,aa,0], out[t,f,:,aa,2], out[t,f,:,aa,1], snr)
-				# else:
-					# out[:, aa, 2] = flux
 	
 	return out
 

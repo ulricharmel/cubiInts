@@ -219,7 +219,7 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=
         tfs = ds.tfs.values
         fbin_idx = ds.fbin_idx.values
         fbin_counts = ds.fbin_counts.values
-        intervals[j] = np.max(tmp[...,3])
+        intervals[j] = np.nanmax(tmp[...,3])
         t, f,_,_ = np.unravel_index(np.nanargmax(tmp[...,3]), tmp[...,3].shape)
 
         if doplots:

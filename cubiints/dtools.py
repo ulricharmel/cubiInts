@@ -19,7 +19,7 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 from cubiints import LOGGER
 
 @njit(fastmath=True, nogil=True, parallel=True, cache=True)
-def get_interval(rms, P, Na, SNR):
+def get_interval(rms, P, Na, SNR, Na_min):
 	Nvis = np.empty(len(rms))
 	grms = np.empty(len(rms))
 
@@ -30,7 +30,7 @@ def get_interval(rms, P, Na, SNR):
 			rr, pp = 0, np.nan
 		elif np.isnan(Na[i]):
 			rr, pp = 0, np.nan
-		elif Na[i]<2:
+		elif Na[i]<Na_min:
 			rr, pp = 0, np.nan
 		else:
 			rr = int(np.ceil(SNR**2.*rms[i]**2./((Na[i]-1.)*P[i]**2.)))
@@ -59,8 +59,8 @@ def np_apply_along_axis(func1d, arr):
     return result
 
 @njit
-def np2Dmean(array):
-    return np_apply_along_2axis(np.nanmean, array)
+def np2Dsum(array):
+    return np_apply_along_2axis(np.nansum, array) #nanmean
 
 @njit
 def np2Dstd(array):
@@ -70,29 +70,6 @@ def np2Dstd(array):
 def np1Dsum(array):
     return np_apply_along_axis(np.nansum, array)
 
-@njit
-def maskdata(rps):
-	nt, nf, nc = rps.shape
-
-	for t in range(nt):
-		for f in range(nf):
-			for c in range(nc):
-				if rps[t,f,c] == 0:
-					rps[t,f,c] = np.nan
-	return rps
-
-@njit
-def maskflag(rps):
-	nt, nf, nc = rps.shape
-	for t in range(nt):
-		for f in range(nf):
-			for c in range(nc):
-				if rps[t,f,c] == 0:
-					rps[t,f,c] = 1
-				else:
-					rps[t,f,c] = np.nan
-	
-	return rps
 
 def rms_chan_ant(data, model, flag, ant1, ant2,
            rbin_idx, fbin_idx, fbin_counts, tbin_counts, nch, snr):
@@ -122,6 +99,7 @@ def _rms_chan_ant(data, model, flag, ant1, ant2, fbin_counts, tbin_counts, snr):
 	uant1 = np.unique(ant1)
 	uant2 = np.unique(ant2)
 	nant = np.maximum(uant1.max(), uant2.max()) + 1
+	na_min = nant/3
 	nch = fbin_counts[0]
 
 	# init output array
@@ -130,61 +108,66 @@ def _rms_chan_ant(data, model, flag, ant1, ant2, fbin_counts, tbin_counts, snr):
 	for aa in prange(nant):
 		dps = data[(ant1==aa)|(ant2==aa)]
 		fps = flag[(ant1==aa)|(ant2==aa)]
-		# dps.compute_chunk_sizes()
-		# rps = np.zeros(dps.shape, dtype=dps.dtype)
+		
 		rps = dps[:,1:,:] - dps[:,:-1,:]
-		# rps[:,0,:] = rps[:,1,:]
-		rps = maskdata(rps)
-		fps = maskflag(fps)
-
-		out[0, 0, 1:, aa, 0] =  np2Dstd(rps)
+	
+		unflagged = np1Dsum(fps[...,0])
+		
+		out[0, 0, 1:, aa, 0] =  np.sqrt(np2Dsum(np.abs(rps)**2)) #/(2*2*unflagged_bls[1:])  # np2Dstd
 		out[0, 0, 0, aa, 0] =  out[0, 0, 1, aa, 0]
-		out[0, 0, :, aa, 1] =  np1Dsum(fps[...,0])/tbin_counts[0]
+		out[0, 0, :, aa, 0] /= np.sqrt(2*2*2*unflagged)
+		
+		out[0, 0, :, aa, 1] =  unflagged/tbin_counts[0]
 
 		mps = model[(ant1==aa)|(ant2==aa)]
 		mps = np.abs(mps)
-		mps = maskdata(mps)
-		out[0, 0, :, aa, 2] = np2Dmean(mps) 
+		
+		out[0, 0, :, aa, 2] = np2Dsum(mps)/(unflagged*2) 
 
-		out[0, 0, :, aa, 3], out[0, 0, :, aa, 4]  = get_interval(out[0, 0, :,aa,0], out[0, 0, :,aa,2], out[0, 0, :,aa,1], snr)
+		out[0, 0, :, aa, 3], out[0, 0, :, aa, 4]  = get_interval(out[0, 0, :,aa,0], out[0, 0, :,aa,2], out[0, 0, :,aa,1], snr, na_min)
 			
 	
 	return out
 
 def model_from_lsm(lsmmodel):
-    """Return a flux to use form an lsmodel
-    Args:
-        lsmmodel (str)
-        -Tigger sky model
-    Returns:
-        complexflux (complex number)
-        -flux + 0j
-    """
+	"""Return a flux to use form an lsmodel
+	Args:
+		lsmmodel (str)
+		-Tigger sky model
+	Returns:
+		complexflux (complex number)
+		-flux + 0j
+	"""
    
+	modelname, tag = lsmmodel.split("@")
+	model_s = Tigger.load(modelname)
+	clusters = {}
+	for src in model_s.sources:
+		try:
+			clusters[src.cluster] = src.cluster_flux
+		except AttributeError:
+			clusters[src.name] = src.flux.I
 
-    if "@" in lsmmodel:
-        modelname, tag = lsmmodel.split("@")
-        de = {}
-        model_s= Tigger.load(modelname)
-        for src in model_s.sources:
-            if src.getTag(tag):
-                de[src.cluster] = src.cluster_flux
+	fluxes = da.array(list(clusters.values()))
+	fullmodel = np.sqrt(np.sum(fluxes**2)) + 0j
+	
+	if "@" in lsmmodel:
+		# modelname, tag = lsmmodel.split("@")
+		de = {}
+		# model_s= Tigger.load(modelname)
+		for src in model_s.sources:
+			if src.getTag(tag):
+				de[src.cluster] = src.cluster_flux
 
-        fluxes = da.array(list(de.values()))
-        complexflux = np.min(fluxes) + 0j
-    else:
-        model_s = Tigger.load(lsmmodel)
-        clusters = {}
-        for src in model_s.sources:
-            try:
-                clusters[src.cluster] = src.cluster_flux
-            except AttributeError:
-                clusters[src.name] = src.flux.I
+		fluxes = da.array(list(de.values()))
+		sourcemodel = np.min(fluxes) + 0j # min
+	else:
+		sourcemodel = fullmodel
+		
 
-        fluxes = da.array(list(clusters.values()))
-        complexflux = np.sqrt(np.sum(fluxes**2)) + 0j
+	# LOGGER.info(f"flux is {fullmodel.real.compute()}, {sourcemodel.real.compute()}")
     
-    return complexflux
+	return fullmodel, sourcemodel
 
 
 def makeplot(array, savename, t0, tf, chan0, chanf):

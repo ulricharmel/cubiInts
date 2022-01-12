@@ -35,7 +35,7 @@ mpl_logger.setLevel(logging.WARNING)
 from cubiints import LOGGER
 
 def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=0,
-                                tchunk=64, fchunk=128, use_corrs=[0,-1], nthreads=4, doplots=True, maxgroups=12, snr=3, name="G"):
+                                tchunk=64, fchunk=128, use_corrs=[0,-1], nthreads=4, doplots=True, maxgroups=12, snr=3, name="G", sqrt=False):
     
     msname = ms_opts["msname"]
     
@@ -135,9 +135,9 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=
     
     xds = [xd for xd in xds if xd.FIELD_ID == field_id]
     
-    if n_scans>maxgroups:
-        xds = random.sample(xds, maxgroups)
-        LOGGER.info(f"{maxgroups} out of the {n_scans} groups will be used for the search!")
+    # if n_scans>maxgroups:
+    #     xds = random.sample(xds, maxgroups)
+    #     LOGGER.info(f"{maxgroups} out of the {n_scans} groups will be used for the search!")
 
     out_ds = []
     intervals = np.zeros(len(xds))
@@ -157,22 +157,26 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=
         flag = da.logical_or(flag, flag_row[:,np.newaxis,np.newaxis])
 
         weight *= da.logical_not(flag)
+        flag = da.logical_not(flag) # reverse flags
         ant1 = ds.ANTENNA1.data
         ant2 = ds.ANTENNA2.data
 
         # apply weights:
-        data *= weight
         if _model_col:
             model = ds.get(modelcol).data
+            data -= model
             if col2:
                 modelsub = ds.get(col2).data
                 model -= modelsub
             model *=weight
         else:
-            complexflux = model_from_lsm(ms_opts["ModelCol"])
+            fullmodel, sourcemodel = model_from_lsm(ms_opts["ModelCol"])
             model = ds.get("MODEL_DATA").data
-            model[:,:,:] = complexflux
-            model *=weight
+            model[:,:,:] = sourcemodel
+            model *= weight
+            data -= fullmodel
+
+        data *= weight
 
         field = ds.FIELD_ID
         ddid = ds.DATA_DESC_ID
@@ -185,8 +189,8 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=
 			data_vars={'data': (('time', 'freq', 'nfreq', 'antenna', 'corr'), tmp_rms),
 					   'fbin_idx': (('freq'), fbin_idx[i]),
 					   'fbin_counts': (('freq'), fbin_counts[i]),
-					   't0s': (('time'), t0s[i]), #t0s
-					   'tfs': (('time'), tfs[i]), #tfs
+					   't0s': (('time'), tbin_idx[i]), #t0s
+					   'tfs': (('time'), tbin_counts[i]), #tfs
                        },
 			attrs = {'FIELD_ID': ds.FIELD_ID,
 					 'DATA_DESC_ID': ds.DATA_DESC_ID,
@@ -219,36 +223,39 @@ def compute_interval_dask_index(ms_opts={}, outdir="./soln-intervals", field_id=
         tfs = ds.tfs.values
         fbin_idx = ds.fbin_idx.values
         fbin_counts = ds.fbin_counts.values
-        intervals[j] = np.max(tmp[...,3])
+        intervals[j] = np.nanmedian(tmp[...,3])
         t, f,_,_ = np.unravel_index(np.nanargmax(tmp[...,3]), tmp[...,3].shape)
 
         if doplots:
             basename = outdir + f'/field{field}/SPW{spw}-SCAN{scan}-'
         
             makeplot(tmp[t,f,:,:,3], basename + f'T{t}F{f}-nv_nt.png',
-                    t0s[t], tf[t], fbin_idx[f], fbin_idx[f] + fbin_counts[f])
+                    t0s[t], t0s[t]+tfs[t], fbin_idx[f], fbin_idx[f] + fbin_counts[f])
 
             makeplot(tmp[t,f,:,:,0], basename + f'T{t}F{f}-rms.png',
-                    t0s[t], tf[t], fbin_idx[f], fbin_idx[f] + fbin_counts[f])
+                    t0s[t], t0s[t]+tfs[t], fbin_idx[f], fbin_idx[f] + fbin_counts[f])
 
             makeplot(tmp[t,f,:,:,1], basename + f'T{t}F{f}-ant.png',
-                    t0s[t], tf[t], fbin_idx[f], fbin_idx[f] + fbin_counts[f])
+                    t0s[t], t0s[t]+tfs[t], fbin_idx[f], fbin_idx[f] + fbin_counts[f])
             
             makeplot(tmp[t,f,:,:,2], basename + f'T{t}F{f}-modelabs.png',
-                    t0s[t], tf[t], fbin_idx[f], fbin_idx[f] + fbin_counts[f])
+                    t0s[t], t0s[t]+tfs[t], fbin_idx[f], fbin_idx[f] + fbin_counts[f])
     
         LOGGER.info("Scan {}/{} done!".format(j+1, len(intervals)))
         
     # Aggregate the results ------------#
     LOGGER.info("Output intervals {}.".format(intervals))
-    nvis = np.max(intervals)
+    nvis = np.nanmax(intervals)
     chunks_size_ok = True
-    f_int = np.ceil(np.sqrt(nvis))
-    # if nvis < fchunk:
-    #     f_int = nvis
-    #     t_int = 1
-    # else:
-    #     f_int = fchunk
+
+    if sqrt:
+        f_int = np.ceil(np.sqrt(nvis))
+    else:
+        if nvis < fchunk:
+            f_int = nvis
+        else:
+            f_int = fchunk
+    
     t_int = np.ceil(nvis/f_int)
     if t_int > tchunk or f_int>fchunk:
         chunks_size_ok = False 
@@ -316,6 +323,7 @@ def create_parser():
     p.add_argument("--outdir", type=str, default="out", help="output directory, default is created in current working directory")
     p.add_argument("--name", type=str, default="G", help="prefix to use in namimg output files (should be the gain term for quartical")
     p.add_argument('--save-out', dest='save_out', action='store_true', help="save all computed statstics in npy files")
+    p.add_argument('--sqrt', dest='sqrt', action='store_true', help="use sqrt of choose frequncy and time interval, otherwise set frequency interval first using chunk size")
 
     p.add_argument("-v", "--verbose", help="increase output verbosity",
                     action="store_true")
@@ -345,7 +353,7 @@ def main():
     try:
         t0 = tt.time()
         compute_interval_dask_index(ms_opts=ms_opts, outdir=outdir, tchunk=args.tchunk, fchunk=args.fchunk, field_id=args.field_id,
-                                            use_corrs=[0,-1], nthreads=args.nthreads, doplots=args.save_out, maxgroups=args.max_scans, snr=args.snr, name=args.name)
+                        use_corrs=[0,-1], nthreads=args.nthreads, doplots=args.save_out, maxgroups=args.max_scans, snr=args.snr, name=args.name, sqrt=args.sqrt)
 
         LOGGER.info(f"Completed in {(tt.time()-t0)/60:.2f} mins")
     except:
